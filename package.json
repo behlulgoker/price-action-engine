@@ -1,7 +1,7 @@
 {
   "name": "price-action-engine",
-  "version": "1.0.0",
-  "description": "Price Action Decision Support Engine - Spot Trading Analysis Tool",
+  "version": "2.0.0",
+  "description": "Price Action Decision Support Engine - Perpetual Trading Analysis Tool with Multi-Technique Detection",
   "private": true,
   "dependencies": {
     "lightweight-charts": "^5.1.0",
