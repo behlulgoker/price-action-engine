@@ -35,6 +35,11 @@ Kullanıcının günlük **1-2 kaliteli işlem** yapmasına yardımcı olmak iç
 | **Range Trading** | Konsolidasyon bölgesi tespiti | ✅ Tamamlandı |
 | **Break of Structure (BOS)** | Trend yapısı kırılımı | ✅ Tamamlandı |
 | **Liquidity Sweep** | Stop avı tespiti | ✅ Tamamlandı |
+| **Chart Patterns** | Double Top/Bottom, H&S, Triangle | ✅ Tamamlandı |
+
+### 1b. Chart Pattern Toggle
+- ✅ Kullanıcı klasik chart pattern'leri açıp kapatabilir
+- ✅ Toggle kapalıyken sadece price action teknikler gösterilir
 
 ### 2. Long & Short Setup Sistemi
 - ✅ **Perpetual Mod:** Hem long hem short setup'lar her zaman analiz edilir
@@ -223,7 +228,6 @@ price-action-engine/
 ### Düşük Öncelik
 - [ ] WebSocket real-time updates
 - [ ] Candlestick pattern recognition (20+ pattern)
-- [ ] Chart pattern detection (H&S, Double Top, vb.)
 - [ ] Dark/Light tema seçeneği
 - [ ] Export/Share özelliği
 

@@ -1,6 +1,11 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createChart, ColorType, CrosshairMode, CandlestickSeries } from 'lightweight-charts';
-import { RefreshCw, TrendingUp, AlertCircle, Calculator, MessageSquare, BarChart3, Search, Clock, ChevronDown, Maximize2, Minus, Plus, Pencil, Slash, MoveHorizontal, Trash2 } from 'lucide-react';
+import { RefreshCw, TrendingUp, AlertCircle, Calculator, MessageSquare, BarChart3, Search, Clock, ChevronDown, Maximize2, Minus, Plus, Pencil, Slash, MoveHorizontal, Trash2, List, X } from 'lucide-react';
+
+// V3 Signal Engine Imports (Institutional Grade)
+import { analyzeV3, SignalMemory, findSwingPoints, findAllBOS, generateSwingDebugMarkers, generateBOSDebugMarkers } from './signalEngineV3.js';
+import { ConditionTracker, CONDITION_STATUS, getStatusIcon, getStatusColor, ELEMENT_TYPE, NEON_COLORS } from './conditionTracker.js';
+import { ZoneAnnotationPrimitive, NeonHighlightPrimitive, UniversalVisualRenderer, renderConditionVisuals, clearConditionVisuals, generateZoneLabel, autoZoomToEvent } from './visualAnnotations.js';
 
 // Trend Line Primitive for lightweight-charts v5
 class TrendLinePrimitive {
@@ -50,6 +55,14 @@ class TrendLinePrimitive {
 
   getPoints() {
     return { p1: this._p1, p2: this._p2 };
+  }
+
+  // Update points for drag functionality
+  updatePoints(p1, p2) {
+    this._p1 = p1;
+    this._p2 = p2;
+    this.updateAllViews();
+    this.requestUpdate();
   }
 
   getOptions() {
@@ -296,6 +309,19 @@ const PriceActionEngine = () => {
   const [firstPoint, setFirstPoint] = useState(null); // For two-click diagonal drawing
   const trendLinePrimitivesRef = useRef([]); // Store primitive instances
   const zonePrimitivesRef = useRef([]); // Store reference zone primitives
+  const priceLineRefs = useRef([]); // Store horizontal line instances for cleanup
+  const userTrendLinePrimitivesRef = useRef([]); // Store user trend line primitives with IDs
+
+  // Dragging state for interactive line editing
+  const [isDragging, setIsDragging] = useState(false);
+  const draggingLineRef = useRef(null); // { id, type, endpoint, startTime, startPrice, originalP1, originalP2 }
+  const dragStartYRef = useRef(null);
+
+  // Refs to store latest line values (prevents stale closures in drag handlers)
+  const drawnLinesRef = useRef([]);
+  const trendLinesRef = useRef([]);
+  const [showLineManager, setShowLineManager] = useState(false); // Toggle line manager panel
+
   const [timeframe, setTimeframe] = useState('4h');
   const [activeTab, setActiveTab] = useState('setups');
   const [candleData, setCandleData] = useState([]);
@@ -310,6 +336,30 @@ const PriceActionEngine = () => {
   ]);
   const [chatInput, setChatInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+
+  // Trade Tracker State
+  const [trades, setTrades] = useState(() => {
+    const saved = localStorage.getItem('trades');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [showTradeModal, setShowTradeModal] = useState(false);
+  const [newTrade, setNewTrade] = useState({
+    pair: '',
+    direction: 'long',
+    entryPrice: '',
+    stopLoss: '',
+    takeProfit: '',
+    size: '',
+    notes: ''
+  });
+
+  // V3 Signal Engine State
+  const [showDebugLayer, setShowDebugLayer] = useState(false); // Toggle swing points debug
+  const [v3Analysis, setV3Analysis] = useState(null); // V3 analysis results
+  const [selectedCondition, setSelectedCondition] = useState(null); // For click-to-zoom
+  const [conditionResults, setConditionResults] = useState([]); // Real-time condition status
+  const highlightPrimitiveRef = useRef(null); // For neon highlight on click
+  const signalMemoryRef = useRef(new SignalMemory()); // Persistent memory
 
   const evaluateComplexity = (msg) => {
     const technicalKeywords = [
@@ -814,6 +864,12 @@ const PriceActionEngine = () => {
         reasons: [
           { type: 'positive', text: `Bullish OB güç: ${nearbyBullishOB.strength.toFixed(0)}%` },
           { type: 'positive', text: 'Fiyat OB zonuna yakın' }
+        ],
+        confirmations: [
+          'Fiyat OB zone\'a geri dönmeli',
+          'Zone içinde rejection candle (pin bar, engulfing) oluşmalı',
+          'Volume artışı ile doğrulama',
+          'HTF trend uyumu kontrolü'
         ]
       };
       const conf = calculateConfidence(baseSetup, trend, srLevels, candleData);
@@ -854,6 +910,12 @@ const PriceActionEngine = () => {
         reasons: [
           { type: 'positive', text: `Bullish FVG: ${nearbyBullishFVG.gapPercent.toFixed(2)}%` },
           { type: 'positive', text: 'Gap henüz doldurulmamış' }
+        ],
+        confirmations: [
+          'Fiyat FVG\'nin %50-75 bölgesine ulaşmalı',
+          'FVG içinde bullish rejection (pin bar, hammer)',
+          'Volume spike ile doğrulama',
+          'Önceki mumun body\'si FVG içinde kapanmalı'
         ]
       };
       const conf = calculateConfidence(baseSetup, trend, srLevels, candleData);
@@ -893,6 +955,12 @@ const PriceActionEngine = () => {
         reasons: [
           { type: 'positive', text: `Range: ${activeRange.bars} bar sürüyor` },
           { type: 'positive', text: 'Fiyat range alt bandında' }
+        ],
+        confirmations: [
+          'Range alt sınırına net dokunma',
+          'Sınırda rejection candle (bullish engulfing, pin bar)',
+          'Volume azalması sonrası ani artış',
+          'RSI oversold bölgesinden çıkış'
         ]
       };
       const conf = calculateConfidence(baseSetup, trend, srLevels, candleData);
@@ -922,6 +990,12 @@ const PriceActionEngine = () => {
         reasons: [
           { type: 'positive', text: 'Equal lows sweep edildi' },
           { type: 'positive', text: 'Fiyat geri döndü - bull trap tamamlandı' }
+        ],
+        confirmations: [
+          'Wick ile sweep gerçekleşmeli (body altında kapatma)',
+          'Sweep sonrası strong bullish candle',
+          'Sweep mumunun tavanı kırılmalı',
+          'Volume spike ile reversal doğrulama'
         ]
       };
       const conf = calculateConfidence(baseSetup, trend, srLevels, candleData);
@@ -951,6 +1025,12 @@ const PriceActionEngine = () => {
         reasons: [
           { type: 'positive', text: 'Bullish BOS oluştu' },
           { type: 'positive', text: 'Fiyat kırılan seviyeyi retest ediyor' }
+        ],
+        confirmations: [
+          'Kırılan seviyeye geri dönüş (retest)',
+          'Retest sırasında bullish rejection',
+          'Önceki direncininin desteğe dönüşmüş olmalı',
+          'LTF\'de bullish structure oluşmalı'
         ]
       };
       const conf = calculateConfidence(baseSetup, trend, srLevels, candleData);
@@ -994,6 +1074,12 @@ const PriceActionEngine = () => {
         reasons: [
           { type: 'positive', text: `Bearish OB güç: ${nearbyBearishOB.strength.toFixed(0)}%` },
           { type: 'positive', text: 'Fiyat OB zonuna yakın' }
+        ],
+        confirmations: [
+          'Fiyat OB zone\'a geri dönmeli',
+          'Zone içinde bearish rejection (shooting star, bearish engulfing)',
+          'Volume artışı ile doğrulama',
+          'HTF trend uyumu kontrolü'
         ]
       };
       const conf = calculateConfidence(baseSetup, trend, srLevels, candleData);
@@ -1034,6 +1120,12 @@ const PriceActionEngine = () => {
         reasons: [
           { type: 'positive', text: `Bearish FVG: ${nearbyBearishFVG.gapPercent.toFixed(2)}%` },
           { type: 'positive', text: 'Gap henüz doldurulmamış' }
+        ],
+        confirmations: [
+          'Fiyat FVG\'nin %50-75 bölgesine ulaşmalı',
+          'FVG içinde bearish rejection (shooting star)',
+          'Volume spike ile doğrulama',
+          'Önceki mumun body\'si FVG içinde kapanmalı'
         ]
       };
       const conf = calculateConfidence(baseSetup, trend, srLevels, candleData);
@@ -1069,6 +1161,12 @@ const PriceActionEngine = () => {
         reasons: [
           { type: 'positive', text: `Range: ${activeRange.bars} bar sürüyor` },
           { type: 'positive', text: 'Fiyat range üst bandında' }
+        ],
+        confirmations: [
+          'Range üst sınırına net dokunma',
+          'Sınırda rejection candle (bearish engulfing, shooting star)',
+          'Volume azalması sonrası ani artış',
+          'RSI overbought bölgesinden çıkış'
         ]
       };
       const conf = calculateConfidence(baseSetup, trend, srLevels, candleData);
@@ -1098,6 +1196,12 @@ const PriceActionEngine = () => {
         reasons: [
           { type: 'positive', text: 'Equal highs sweep edildi' },
           { type: 'positive', text: 'Fiyat geri döndü - bear trap tamamlandı' }
+        ],
+        confirmations: [
+          'Wick ile sweep gerçekleşmeli (üstünde kapatma)',
+          'Sweep sonrası strong bearish candle',
+          'Sweep mumunun tabanı kırılmalı',
+          'Volume spike ile reversal doğrulama'
         ]
       };
       const conf = calculateConfidence(baseSetup, trend, srLevels, candleData);
@@ -1127,6 +1231,12 @@ const PriceActionEngine = () => {
         reasons: [
           { type: 'positive', text: 'Bearish BOS oluştu' },
           { type: 'positive', text: 'Fiyat kırılan seviyeyi retest ediyor' }
+        ],
+        confirmations: [
+          'Kırılan seviyeye geri dönüş (retest)',
+          'Retest sırasında bearish rejection',
+          'Önceki desteğin dirence dönüşmüş olmalı',
+          'LTF\'de bearish structure oluşmalı'
         ]
       };
       const conf = calculateConfidence(baseSetup, trend, srLevels, candleData);
@@ -1900,6 +2010,394 @@ GRAFİKTE: Sweep edilen seviye + geri dönüş noktası işaretlenir`;
     // Better: Helper function to add lines.
   }, [drawnLines]);
 
+  // Sync refs with state (for drag handlers to access latest values)
+  useEffect(() => {
+    drawnLinesRef.current = drawnLines;
+    trendLinesRef.current = trendLines;
+  }, [drawnLines, trendLines]);
+
+  // Sync trades to localStorage
+  useEffect(() => {
+    localStorage.setItem('trades', JSON.stringify(trades));
+  }, [trades]);
+
+  // V3 Signal Engine Analysis
+  useEffect(() => {
+    if (!candleData || candleData.length < 20) return;
+
+    try {
+      // Run V3 analysis
+      const analysis = analyzeV3(candleData);
+      setV3Analysis(analysis);
+
+      // Update signal memory
+      signalMemoryRef.current.update(candleData);
+
+      // Run condition checks if setup is selected
+      if (currentSetup && currentSetup.confirmations) {
+        const tracker = new ConditionTracker(currentSetup);
+        const currentPrice = candleData[candleData.length - 1]?.close;
+        const results = tracker.checkAll({
+          candles: candleData,
+          currentPrice,
+          trend: analysis.trend
+        });
+        setConditionResults(results);
+
+        // Alert if all conditions met
+        if (tracker.shouldAlert() && Notification.permission === 'granted') {
+          new Notification('🎯 Tüm Koşullar Sağlandı!', {
+            body: `${symbol} - ${currentSetup.name}`,
+            tag: `setup-${currentSetup.id}`
+          });
+        }
+      }
+    } catch (error) {
+      console.warn('V3 Analysis error:', error);
+    }
+  }, [candleData, currentSetup, symbol]);
+
+  // Click-to-zoom handler for conditions - Universal Visual Protocol
+  // MENTOR-STYLE: Zooms and shows educational visuals for BOTH Long AND Short
+  const handleConditionClick = useCallback((condition) => {
+    if (!chartRef.current || !candlestickSeriesRef.current || !candleData) return;
+
+    console.log('🎯 Condition clicked:', condition.text, condition.visualMeta);
+    setSelectedCondition(condition);
+
+    // Clear previous visuals
+    if (highlightPrimitiveRef.current) {
+      try {
+        if (Array.isArray(highlightPrimitiveRef.current)) {
+          highlightPrimitiveRef.current.forEach(p => {
+            try { candlestickSeriesRef.current.detachPrimitive(p); } catch (e) { }
+          });
+        } else {
+          candlestickSeriesRef.current.detachPrimitive(highlightPrimitiveRef.current);
+        }
+      } catch (e) { }
+      highlightPrimitiveRef.current = null;
+    }
+
+    // EXPLICIT ZOOM using focusIndex from visualMeta
+    const focusIndex = condition.visualMeta?.focusIndex || candleData.length - 1;
+    const timeScale = chartRef.current.timeScale();
+
+    // Calculate visible range: center on focusIndex with 30 bars around
+    const fromIndex = Math.max(0, focusIndex - 25);
+    const toIndex = Math.min(candleData.length - 1, focusIndex + 10);
+
+    // Set visible logical range (explicit zoom)
+    try {
+      timeScale.setVisibleLogicalRange({
+        from: fromIndex,
+        to: toIndex
+      });
+      console.log('📍 Zoomed to range:', fromIndex, '-', toIndex);
+    } catch (e) {
+      console.warn('Zoom failed:', e);
+    }
+
+    // Render Universal Visual Protocol elements
+    if (condition.visualMeta?.elements) {
+      const renderer = new UniversalVisualRenderer(candleData, condition.visualMeta, {
+        showTooltip: true,
+        animatePulsing: true
+      });
+
+      candlestickSeriesRef.current.attachPrimitive(renderer);
+      highlightPrimitiveRef.current = renderer;
+    } else {
+      // Fallback to legacy NeonHighlight if no visualMeta
+      const focusCandle = candleData[focusIndex];
+      if (focusCandle) {
+        const highlight = new NeonHighlightPrimitive(
+          focusCandle.time,
+          condition.visualMeta?.focusPrice || focusCandle.close,
+          {
+            color: getStatusColor(condition.status),
+            text: condition.result?.message || condition.text,
+            size: 40
+          }
+        );
+
+        candlestickSeriesRef.current.attachPrimitive(highlight);
+        highlightPrimitiveRef.current = highlight;
+      }
+    }
+  }, [candleData]);
+
+  // Open a new trade
+  const openTrade = () => {
+    if (!newTrade.entryPrice || !newTrade.size) return;
+
+    const trade = {
+      id: Date.now(),
+      pair: newTrade.pair || symbol || 'UNKNOWN',
+      direction: newTrade.direction,
+      entryPrice: parseFloat(newTrade.entryPrice),
+      stopLoss: newTrade.stopLoss ? parseFloat(newTrade.stopLoss) : null,
+      takeProfit: newTrade.takeProfit ? parseFloat(newTrade.takeProfit) : null,
+      size: parseFloat(newTrade.size),
+      notes: newTrade.notes,
+      openTime: new Date().toISOString(),
+      status: 'open',
+      closeTime: null,
+      closePrice: null,
+      pnl: null
+    };
+
+    setTrades(prev => [...prev, trade]);
+    setNewTrade({ pair: '', direction: 'long', entryPrice: '', stopLoss: '', takeProfit: '', size: '', notes: '' });
+    setShowTradeModal(false);
+  };
+
+  // Close a trade
+  const closeTrade = (tradeId, closePrice) => {
+    setTrades(prev => prev.map(t => {
+      if (t.id !== tradeId) return t;
+
+      const priceDiff = closePrice - t.entryPrice;
+      const pnlPercent = t.direction === 'long'
+        ? (priceDiff / t.entryPrice) * 100
+        : (-priceDiff / t.entryPrice) * 100;
+      const pnl = (pnlPercent / 100) * t.size;
+
+      return {
+        ...t,
+        status: 'closed',
+        closeTime: new Date().toISOString(),
+        closePrice: closePrice,
+        pnl: pnl
+      };
+    }));
+  };
+
+  // Trade statistics
+  const tradeStats = useMemo(() => {
+    const closedTrades = trades.filter(t => t.status === 'closed');
+    const wins = closedTrades.filter(t => t.pnl > 0);
+    const totalPnl = closedTrades.reduce((sum, t) => sum + (t.pnl || 0), 0);
+
+    const avgRR = closedTrades.length > 0
+      ? closedTrades.reduce((sum, t) => {
+        if (!t.stopLoss || !t.takeProfit) return sum;
+        const risk = Math.abs(t.entryPrice - t.stopLoss);
+        const reward = Math.abs(t.takeProfit - t.entryPrice);
+        return sum + (reward / risk);
+      }, 0) / closedTrades.length
+      : 0;
+
+    return {
+      total: trades.length,
+      open: trades.filter(t => t.status === 'open').length,
+      closed: closedTrades.length,
+      wins: wins.length,
+      winRate: closedTrades.length > 0 ? (wins.length / closedTrades.length) * 100 : 0,
+      totalPnl: totalPnl,
+      avgRR: avgRR
+    };
+  }, [trades]);
+
+  // Drag and Drop for Lines (horizontal and trend)
+  useEffect(() => {
+    if (!chartContainerRef.current || !chartRef.current || !candlestickSeriesRef.current) return;
+
+    const container = chartContainerRef.current;
+    const DRAG_THRESHOLD = 15; // pixels
+
+    // Format price to 2 decimal places
+    const formatPrice = (price) => parseFloat(price.toFixed(2));
+
+    // Calculate distance from point to line segment
+    const distanceToLineSegment = (px, py, x1, y1, x2, y2) => {
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+      const lengthSq = dx * dx + dy * dy;
+
+      if (lengthSq === 0) return Math.sqrt((px - x1) ** 2 + (py - y1) ** 2);
+
+      let t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / lengthSq));
+      const projX = x1 + t * dx;
+      const projY = y1 + t * dy;
+
+      return Math.sqrt((px - projX) ** 2 + (py - projY) ** 2);
+    };
+
+    const handleMouseDown = (e) => {
+      if (drawingMode) return;
+
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const series = candlestickSeriesRef.current;
+      const chart = chartRef.current;
+
+      const currentTrendLines = trendLinesRef.current;
+      const currentDrawnLines = drawnLinesRef.current;
+
+      // Check trend line endpoints first
+      for (const line of currentTrendLines) {
+        const p1X = chart.timeScale().timeToCoordinate(line.p1.time);
+        const p1Y = series.priceToCoordinate(line.p1.price);
+        const p2X = chart.timeScale().timeToCoordinate(line.p2.time);
+        const p2Y = series.priceToCoordinate(line.p2.price);
+
+        if (p1X !== null && p1Y !== null) {
+          if (Math.sqrt((x - p1X) ** 2 + (y - p1Y) ** 2) < DRAG_THRESHOLD) {
+            draggingLineRef.current = { id: line.id, type: 'trend', endpoint: 'p1' };
+            setIsDragging(true);
+            container.style.cursor = 'move';
+            chart.applyOptions({ handleScroll: false, handleScale: false });
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+        }
+
+        if (p2X !== null && p2Y !== null) {
+          if (Math.sqrt((x - p2X) ** 2 + (y - p2Y) ** 2) < DRAG_THRESHOLD) {
+            draggingLineRef.current = { id: line.id, type: 'trend', endpoint: 'p2' };
+            setIsDragging(true);
+            container.style.cursor = 'move';
+            chart.applyOptions({ handleScroll: false, handleScale: false });
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+        }
+      }
+
+      // Check trend line body (middle drag)
+      for (const line of currentTrendLines) {
+        const p1X = chart.timeScale().timeToCoordinate(line.p1.time);
+        const p1Y = series.priceToCoordinate(line.p1.price);
+        const p2X = chart.timeScale().timeToCoordinate(line.p2.time);
+        const p2Y = series.priceToCoordinate(line.p2.price);
+
+        if (p1X !== null && p1Y !== null && p2X !== null && p2Y !== null) {
+          if (distanceToLineSegment(x, y, p1X, p1Y, p2X, p2Y) < DRAG_THRESHOLD) {
+            const currentTime = chart.timeScale().coordinateToTime(x);
+            const currentPrice = series.coordinateToPrice(y);
+            draggingLineRef.current = {
+              id: line.id,
+              type: 'trend',
+              endpoint: 'body',
+              startTime: currentTime,
+              startPrice: currentPrice,
+              originalP1: { ...line.p1 },
+              originalP2: { ...line.p2 }
+            };
+            setIsDragging(true);
+            container.style.cursor = 'move';
+            chart.applyOptions({ handleScroll: false, handleScale: false });
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+        }
+      }
+
+      // Check horizontal lines
+      for (const line of currentDrawnLines) {
+        const lineY = series.priceToCoordinate(line.price);
+        if (lineY !== null && Math.abs(y - lineY) < DRAG_THRESHOLD) {
+          draggingLineRef.current = { id: line.id, type: 'horizontal', originalPrice: line.price };
+          dragStartYRef.current = y;
+          setIsDragging(true);
+          container.style.cursor = 'ns-resize';
+          chart.applyOptions({ handleScroll: false, handleScale: false });
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+      }
+    };
+
+    const handleMouseMove = (e) => {
+      if (!draggingLineRef.current) return;
+
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const series = candlestickSeriesRef.current;
+      const chart = chartRef.current;
+      const newPrice = series.coordinateToPrice(y);
+      const newTime = chart.timeScale().coordinateToTime(x);
+
+      if (draggingLineRef.current.type === 'horizontal' && newPrice !== null) {
+        setDrawnLines(prev => {
+          if (!Array.isArray(prev)) return [];
+          if (!draggingLineRef.current) return prev;
+          const targetId = draggingLineRef.current.id;
+          return prev
+            .filter(line => line && typeof line === 'object')
+            .map(line => line.id === targetId ? { ...line, price: formatPrice(newPrice) } : line)
+            .filter(line => line && typeof line === 'object');
+        });
+      } else if (draggingLineRef.current.type === 'trend' && newPrice !== null && newTime !== null) {
+        const { endpoint } = draggingLineRef.current;
+
+        if (endpoint === 'body') {
+          const deltaTime = newTime - draggingLineRef.current.startTime;
+          const deltaPrice = newPrice - draggingLineRef.current.startPrice;
+
+          setTrendLines(prev => {
+            if (!Array.isArray(prev)) return [];
+            if (!draggingLineRef.current) return prev;
+            const targetId = draggingLineRef.current.id;
+            const { originalP1, originalP2 } = draggingLineRef.current;
+            return prev
+              .filter(line => line && typeof line === 'object')
+              .map(line => line.id === targetId ? {
+                ...line,
+                p1: { time: originalP1.time + deltaTime, price: formatPrice(originalP1.price + deltaPrice) },
+                p2: { time: originalP2.time + deltaTime, price: formatPrice(originalP2.price + deltaPrice) }
+              } : line)
+              .filter(line => line && typeof line === 'object');
+          });
+        } else {
+          setTrendLines(prev => {
+            if (!Array.isArray(prev)) return [];
+            if (!draggingLineRef.current) return prev;
+            const targetId = draggingLineRef.current.id;
+            return prev
+              .filter(line => line && typeof line === 'object')
+              .map(line => line.id === targetId ? {
+                ...line,
+                [endpoint]: { time: newTime, price: formatPrice(newPrice) }
+              } : line)
+              .filter(line => line && typeof line === 'object');
+          });
+        }
+      }
+    };
+
+    const handleMouseUp = () => {
+      if (draggingLineRef.current) {
+        draggingLineRef.current = null;
+        dragStartYRef.current = null;
+        setIsDragging(false);
+        container.style.cursor = '';
+        if (chartRef.current) {
+          chartRef.current.applyOptions({
+            handleScroll: { vertTouchDrag: true },
+            handleScale: { axisPressedMouseMove: true }
+          });
+        }
+      }
+    };
+
+    container.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      container.removeEventListener('mousedown', handleMouseDown);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [drawingMode]);
 
   // Fetch available symbols from Binance
   useEffect(() => {
@@ -2127,14 +2625,28 @@ GRAFİKTE: Sweep edilen seviye + geri dönüş noktası işaretlenir`;
                   className={`p-2 rounded flex items-center gap-1 ${drawingMode === 'diagonal' ? 'bg-purple-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600'}`}
                   title="Trend Çizgisi (iki tık)"
                 >
-                  <Slash size={16} />
+                  <Pencil size={16} />
                 </button>
+
+                {/* Line Manager Toggle */}
+                {(drawnLines.length > 0 || trendLines.length > 0) && (
+                  <button
+                    onClick={() => setShowLineManager(!showLineManager)}
+                    className={`p-2 rounded flex items-center gap-1 ${showLineManager ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600'}`}
+                    title="Çizgi Yöneticisi"
+                  >
+                    <List size={16} />
+                    <span className="text-xs">{drawnLines.length + trendLines.length}</span>
+                  </button>
+                )}
+
                 {/* Clear All Lines */}
                 {(drawnLines.length > 0 || trendLines.length > 0) && (
                   <button
                     onClick={() => {
                       setDrawnLines([]);
                       setTrendLines([]);
+                      setShowLineManager(false);
                     }}
                     className="p-2 bg-gray-700 hover:bg-red-600 text-gray-400 hover:text-white rounded"
                     title="Tüm Çizgileri Temizle"
@@ -2143,6 +2655,63 @@ GRAFİKTE: Sweep edilen seviye + geri dönüş noktası işaretlenir`;
                   </button>
                 )}
               </div>
+
+              {/* Line Manager Panel */}
+              {showLineManager && (drawnLines.length > 0 || trendLines.length > 0) && (
+                <div className="absolute top-14 left-4 z-10 bg-gray-900/95 rounded-lg p-3 min-w-64 max-h-80 overflow-y-auto border border-gray-700 shadow-xl">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-bold text-gray-200">📐 Çizgi Yöneticisi</span>
+                    <button onClick={() => setShowLineManager(false)} className="text-gray-400 hover:text-white">
+                      <X size={14} />
+                    </button>
+                  </div>
+
+                  {/* Horizontal Lines */}
+                  {drawnLines.length > 0 && (
+                    <div className="mb-2">
+                      <div className="text-xs text-amber-400 mb-1">Yatay Çizgiler ({drawnLines.length})</div>
+                      {drawnLines.map(line => (
+                        <div key={line.id} className="flex items-center justify-between py-1 px-2 bg-gray-800 rounded mb-1 text-xs">
+                          <div className="flex items-center gap-2">
+                            <div className="w-3 h-0.5 bg-amber-500"></div>
+                            <span className="text-gray-300">${line.price.toFixed(2)}</span>
+                          </div>
+                          <button
+                            onClick={() => setDrawnLines(prev => prev.filter(l => l.id !== line.id))}
+                            className="text-gray-500 hover:text-red-400"
+                            title="Sil"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Trend Lines */}
+                  {trendLines.length > 0 && (
+                    <div>
+                      <div className="text-xs text-purple-400 mb-1">Trend Çizgileri ({trendLines.length})</div>
+                      {trendLines.map((line, idx) => (
+                        <div key={line.id} className="flex items-center justify-between py-1 px-2 bg-gray-800 rounded mb-1 text-xs">
+                          <div className="flex items-center gap-2">
+                            <div className="w-3 h-0.5 bg-purple-500 transform rotate-45"></div>
+                            <span className="text-gray-300">Trend #{idx + 1}</span>
+                            <span className="text-gray-500 text-[10px]">${line.p1.price.toFixed(0)} → ${line.p2.price.toFixed(0)}</span>
+                          </div>
+                          <button
+                            onClick={() => setTrendLines(prev => prev.filter(l => l.id !== line.id))}
+                            className="text-gray-500 hover:text-red-400"
+                            title="Sil"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Drawing Mode Indicator */}
               {drawingMode && (
@@ -2184,6 +2753,7 @@ GRAFİKTE: Sweep edilen seviye + geri dönüş noktası işaretlenir`;
           <div className="flex border-b border-gray-700">
             {[
               { id: 'setups', icon: BarChart3, label: 'Setups' },
+              { id: 'trades', icon: Calculator, label: 'Trades' },
               { id: 'chat', icon: MessageSquare, label: 'Chat' }
             ].map(tab => (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)}
@@ -2291,6 +2861,107 @@ GRAFİKTE: Sweep edilen seviye + geri dönüş noktası işaretlenir`;
                                   </div>
                                 ))}
                               </div>
+
+                              {/* Entry Confirmations with V3 Status */}
+                              {setup.confirmations && setup.confirmations.length > 0 && (
+                                <div className="mt-2 pt-2 border-t border-gray-600">
+                                  <div className="flex items-center justify-between mb-1">
+                                    <span className="text-gray-300 font-bold text-[11px]">🎯 Entry Koşulları:</span>
+                                    {conditionResults.length > 0 && (
+                                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-700">
+                                        {conditionResults.filter(c => c.status === 'met').length}/{conditionResults.length}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="space-y-1">
+                                    {(conditionResults.length > 0 ? conditionResults : setup.confirmations.map((c, i) => ({
+                                      id: i, text: c, status: 'pending', result: null
+                                    }))).map((cond, i) => (
+                                      <div
+                                        key={i}
+                                        onClick={() => {
+                                          // FIXED: Always pass visualMeta for both Long AND Short
+                                          console.log('🎯 Condition clicked:', cond.text, 'visualMeta:', cond.visualMeta);
+
+                                          if (cond.visualMeta) {
+                                            // visualMeta exists - use it directly
+                                            handleConditionClick(cond);
+                                          } else if (cond.result?.candleTime) {
+                                            // Has candleTime but no visualMeta - legacy behavior
+                                            handleConditionClick(cond);
+                                          } else if (candleData && candleData.length > 0) {
+                                            // For pending without visualMeta: create basic zoom info
+                                            const lastCandle = candleData[candleData.length - 1];
+                                            const lastIndex = candleData.length - 1;
+                                            const entryPrice = setup?.entry?.[0] || lastCandle.close;
+                                            const isShort = setup?.direction === 'short';
+
+                                            const pendingCond = {
+                                              ...cond,
+                                              visualMeta: {
+                                                focusIndex: lastIndex,
+                                                focusPrice: entryPrice,
+                                                tooltip: isShort
+                                                  ? '📍 SHORT: Fiyat zone\'a yükselmeli'
+                                                  : '📍 LONG: Fiyat zone\'a geri çekilmeli',
+                                                elements: [
+                                                  {
+                                                    type: 'ZONE',
+                                                    y1: setup?.entry?.[1] || lastCandle.high,
+                                                    y2: setup?.entry?.[0] || lastCandle.low,
+                                                    x1_index: Math.max(0, lastIndex - 30),
+                                                    x2_index: 'FUTURE',
+                                                    color: isShort ? 'rgba(239, 68, 68, 0.4)' : 'rgba(34, 197, 94, 0.4)',
+                                                    label: isShort ? '🎯 SHORT Entry Zone' : '🎯 LONG Entry Zone',
+                                                    style: 'PULSING'
+                                                  },
+                                                  {
+                                                    type: 'LINE',
+                                                    price: entryPrice,
+                                                    style: 'PULSING',
+                                                    color: isShort ? '#ff4444' : '#22c55e',
+                                                    label: isShort
+                                                      ? `👇 SHORT ENTRY - Touch Here ($${entryPrice?.toFixed(0)})`
+                                                      : `👆 LONG ENTRY - Touch Here ($${entryPrice?.toFixed(0)})`
+                                                  }
+                                                ]
+                                              },
+                                              result: {
+                                                candleTime: lastCandle.time,
+                                                price: entryPrice,
+                                                message: cond.status === 'pending' ? '⏳ Bekleniyor - Mevcut seviye' : cond.result?.message || cond.text
+                                              }
+                                            };
+                                            handleConditionClick(pendingCond);
+                                          }
+                                        }}
+                                        className={`text-[10px] flex items-start gap-1.5 p-1.5 rounded cursor-pointer transition-all
+                                          ${cond.status === 'met' ? 'bg-green-900/30 text-green-400 hover:bg-green-800/40' :
+                                            cond.status === 'failed' ? 'bg-red-900/30 text-red-400 hover:bg-red-800/40' :
+                                              'bg-yellow-900/20 text-yellow-300 hover:bg-yellow-800/30'}
+                                          border border-transparent hover:border-white/20 active:scale-[0.98]`}
+                                        title="Tıkla: Grafikte göster"
+                                      >
+                                        <span className="shrink-0 text-sm">
+                                          {cond.status === 'met' ? '✅' : cond.status === 'failed' ? '❌' : '⏳'}
+                                        </span>
+                                        <div className="flex-1">
+                                          <div>{cond.text}</div>
+                                          {cond.result?.message && cond.result.message !== cond.text && (
+                                            <div className="text-[9px] opacity-70">{cond.result.message}</div>
+                                          )}
+                                        </div>
+                                        <span className="text-[10px] opacity-60">🔍</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <div className="text-[9px] text-gray-500 mt-1 italic">
+                                    {conditionResults.every(c => c.status === 'met') && conditionResults.length > 0
+                                      ? '✅ Tüm koşullar sağlandı!'
+                                      : 'Tıklayarak grafikte gör. Tüm koşullar oluşmadan giriş YAPMAYIN!'}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
@@ -2376,6 +3047,84 @@ GRAFİKTE: Sweep edilen seviye + geri dönüş noktası işaretlenir`;
                                   </div>
                                 ))}
                               </div>
+
+                              {/* Entry Confirmations with V3 Status - SHORT */}
+                              {setup.confirmations && setup.confirmations.length > 0 && (
+                                <div className="mt-2 pt-2 border-t border-gray-600">
+                                  <div className="flex items-center justify-between mb-1">
+                                    <span className="text-gray-300 font-bold text-[11px]">🎯 Entry Koşulları:</span>
+                                  </div>
+                                  <div className="space-y-1">
+                                    {setup.confirmations.map((conf, i) => (
+                                      <div
+                                        key={i}
+                                        onClick={() => {
+                                          // SHORT CLICK HANDLER WITH VISUALMETA
+                                          if (candleData && candleData.length > 0) {
+                                            const lastCandle = candleData[candleData.length - 1];
+                                            const lastIndex = candleData.length - 1;
+                                            const entryPrice = setup?.entry?.[0] || lastCandle.close;
+
+                                            const shortCond = {
+                                              id: `short_cond_${i}_${lastCandle.time}`,
+                                              text: conf,
+                                              status: 'pending',
+                                              visualMeta: {
+                                                focusIndex: lastIndex,
+                                                focusPrice: entryPrice,
+                                                elements: [
+                                                  {
+                                                    type: 'ZONE',
+                                                    y1: setup?.entry?.[1] || lastCandle.high,
+                                                    y2: setup?.entry?.[0] || lastCandle.low,
+                                                    x1_index: Math.max(0, lastIndex - 30),
+                                                    x2_index: 'FUTURE',
+                                                    color: 'rgba(239, 68, 68, 0.4)',
+                                                    label: '🎯 SHORT Entry Zone',
+                                                    style: 'PULSING'
+                                                  },
+                                                  {
+                                                    type: 'LINE',
+                                                    price: entryPrice,
+                                                    style: 'PULSING',
+                                                    color: '#ff4444',
+                                                    label: `👇 SHORT ENTRY ($${entryPrice?.toFixed(0)})`
+                                                  },
+                                                  {
+                                                    type: 'LINE',
+                                                    price: setup?.stop || entryPrice * 1.02,
+                                                    style: 'DASHED',
+                                                    color: '#ff0000',
+                                                    label: `🛑 STOP LOSS ($${setup?.stop?.toFixed(0)})`
+                                                  }
+                                                ]
+                                              },
+                                              result: {
+                                                candleTime: lastCandle.time,
+                                                price: entryPrice,
+                                                message: '⏳ Bekleniyor - SHORT entry zone'
+                                              }
+                                            };
+                                            console.log('🔴 SHORT Condition clicked:', conf, shortCond.visualMeta);
+                                            handleConditionClick(shortCond);
+                                          }
+                                        }}
+                                        className="text-[10px] flex items-start gap-1.5 p-1.5 rounded cursor-pointer transition-all
+                                          bg-yellow-900/20 text-yellow-300 hover:bg-red-800/30
+                                          border border-transparent hover:border-red-500/50 active:scale-[0.98]"
+                                        title="Tıkla: Grafikte göster"
+                                      >
+                                        <span className="shrink-0 text-sm">⏳</span>
+                                        <div className="flex-1">
+                                          <div>{conf}</div>
+                                        </div>
+                                        <span className="text-[10px] opacity-60 text-red-400">🔍</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <div className="text-[9px] text-gray-500 mt-1 italic">Tüm koşullar oluşmadan giriş YAPMAYIN!</div>
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
@@ -2441,6 +3190,123 @@ GRAFİKTE: Sweep edilen seviye + geri dönüş noktası işaretlenir`;
               </div>
             )}
 
+            {activeTab === 'trades' && (
+              <div className="space-y-4">
+                {/* Trade Stats */}
+                <div className="bg-gradient-to-br from-gray-700 to-gray-800 rounded-lg p-4">
+                  <h3 className="text-lg font-bold text-blue-400 mb-3">📊 Performance</h3>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div className="bg-gray-900/50 rounded p-2">
+                      <div className="text-gray-400 text-xs">Win Rate</div>
+                      <div className={`font-bold ${tradeStats.winRate >= 50 ? 'text-green-400' : 'text-red-400'}`}>
+                        {tradeStats.winRate.toFixed(1)}%
+                      </div>
+                    </div>
+                    <div className="bg-gray-900/50 rounded p-2">
+                      <div className="text-gray-400 text-xs">Avg R:R</div>
+                      <div className="font-bold text-blue-400">{tradeStats.avgRR.toFixed(2)}</div>
+                    </div>
+                    <div className="bg-gray-900/50 rounded p-2">
+                      <div className="text-gray-400 text-xs">Total P&L</div>
+                      <div className={`font-bold ${tradeStats.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        ${tradeStats.totalPnl.toFixed(2)}
+                      </div>
+                    </div>
+                    <div className="bg-gray-900/50 rounded p-2">
+                      <div className="text-gray-400 text-xs">Trades</div>
+                      <div className="font-bold text-gray-200">{tradeStats.closed} / {tradeStats.total}</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* New Trade Button */}
+                <button
+                  onClick={() => {
+                    setNewTrade(prev => ({ ...prev, pair: symbol || '' }));
+                    setShowTradeModal(true);
+                  }}
+                  className="w-full py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-bold flex items-center justify-center gap-2"
+                >
+                  <Plus size={18} /> Yeni İşlem Ekle
+                </button>
+
+                {/* Open Trades */}
+                {trades.filter(t => t.status === 'open').length > 0 && (
+                  <div className="border border-green-500/30 rounded-lg overflow-hidden">
+                    <div className="bg-green-900/30 px-3 py-2 text-green-400 font-bold text-sm">
+                      🟢 Açık İşlemler ({trades.filter(t => t.status === 'open').length})
+                    </div>
+                    <div className="p-2 space-y-2">
+                      {trades.filter(t => t.status === 'open').map(trade => (
+                        <div key={trade.id} className="bg-gray-700/50 rounded-lg p-3 text-sm">
+                          <div className="flex justify-between items-center mb-2">
+                            <span className={`font-bold ${trade.direction === 'long' ? 'text-green-400' : 'text-red-400'}`}>
+                              {trade.direction.toUpperCase()} {trade.pair}
+                            </span>
+                            <span className="text-gray-400">${trade.size}</span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2 text-xs text-gray-400 mb-2">
+                            <div>Entry: ${trade.entryPrice}</div>
+                            <div>SL: ${trade.stopLoss || '-'}</div>
+                            <div>TP: ${trade.takeProfit || '-'}</div>
+                          </div>
+                          <div className="flex gap-2">
+                            <input
+                              type="number"
+                              placeholder="Kapanış fiyatı"
+                              className="flex-1 px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs"
+                              id={`close-${trade.id}`}
+                            />
+                            <button
+                              onClick={() => {
+                                const input = document.getElementById(`close-${trade.id}`);
+                                if (input?.value) closeTrade(trade.id, parseFloat(input.value));
+                              }}
+                              className="px-3 py-1 bg-red-600 hover:bg-red-700 rounded text-xs"
+                            >
+                              Kapat
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Trade History */}
+                {trades.filter(t => t.status === 'closed').length > 0 && (
+                  <div className="border border-gray-600 rounded-lg overflow-hidden">
+                    <div className="bg-gray-700/50 px-3 py-2 text-gray-300 font-bold text-sm">
+                      📜 Geçmiş ({trades.filter(t => t.status === 'closed').length})
+                    </div>
+                    <div className="p-2 space-y-1 max-h-40 overflow-y-auto">
+                      {trades.filter(t => t.status === 'closed').slice(-5).reverse().map(trade => (
+                        <div key={trade.id} className="flex justify-between items-center bg-gray-800/50 rounded px-3 py-2 text-xs">
+                          <div>
+                            <span className={trade.direction === 'long' ? 'text-green-400' : 'text-red-400'}>
+                              {trade.direction.toUpperCase()}
+                            </span>
+                            <span className="text-gray-400 ml-2">{trade.pair}</span>
+                          </div>
+                          <span className={`font-bold ${trade.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {trade.pnl >= 0 ? '+' : ''}${trade.pnl?.toFixed(2)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {trades.length === 0 && (
+                  <div className="text-center text-gray-500 py-8">
+                    <Calculator size={32} className="mx-auto mb-2 opacity-30" />
+                    <p>Henüz işlem yok</p>
+                    <p className="text-xs mt-1">İşlemlerinizi buradan takip edin</p>
+                  </div>
+                )}
+              </div>
+            )}
+
             {activeTab === 'chat' && (
               <div className="flex flex-col h-full">
                 <h3 className="text-lg font-bold text-blue-400 mb-4">AI CHAT</h3>
@@ -2471,6 +3337,116 @@ GRAFİKTE: Sweep edilen seviye + geri dönüş noktası işaretlenir`;
           </div>
         </div>
       </div>
+
+      {/* Trade Modal */}
+      {showTradeModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-gray-800 rounded-xl p-6 w-96 border border-gray-700">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xl font-bold text-blue-400">📝 Yeni İşlem</h3>
+              <button onClick={() => setShowTradeModal(false)} className="text-gray-400 hover:text-white">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-gray-400">Pair</label>
+                <input
+                  type="text"
+                  value={newTrade.pair}
+                  onChange={(e) => setNewTrade(prev => ({ ...prev, pair: e.target.value }))}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
+                  placeholder="BTCUSDT"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-400">Yön</label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setNewTrade(prev => ({ ...prev, direction: 'long' }))}
+                    className={`flex-1 py-2 rounded font-bold ${newTrade.direction === 'long' ? 'bg-green-600' : 'bg-gray-700'}`}
+                  >
+                    LONG
+                  </button>
+                  <button
+                    onClick={() => setNewTrade(prev => ({ ...prev, direction: 'short' }))}
+                    className={`flex-1 py-2 rounded font-bold ${newTrade.direction === 'short' ? 'bg-red-600' : 'bg-gray-700'}`}
+                  >
+                    SHORT
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-gray-400">Entry Price</label>
+                  <input
+                    type="number"
+                    value={newTrade.entryPrice}
+                    onChange={(e) => setNewTrade(prev => ({ ...prev, entryPrice: e.target.value }))}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
+                    placeholder="0.00"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400">Position Size ($)</label>
+                  <input
+                    type="number"
+                    value={newTrade.size}
+                    onChange={(e) => setNewTrade(prev => ({ ...prev, size: e.target.value }))}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
+                    placeholder="100"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-gray-400">Stop Loss</label>
+                  <input
+                    type="number"
+                    value={newTrade.stopLoss}
+                    onChange={(e) => setNewTrade(prev => ({ ...prev, stopLoss: e.target.value }))}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
+                    placeholder="Opsiyonel"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400">Take Profit</label>
+                  <input
+                    type="number"
+                    value={newTrade.takeProfit}
+                    onChange={(e) => setNewTrade(prev => ({ ...prev, takeProfit: e.target.value }))}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
+                    placeholder="Opsiyonel"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-400">Not</label>
+                <input
+                  type="text"
+                  value={newTrade.notes}
+                  onChange={(e) => setNewTrade(prev => ({ ...prev, notes: e.target.value }))}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
+                  placeholder="OB long, HTF trend uyumu..."
+                />
+              </div>
+
+              <button
+                onClick={openTrade}
+                disabled={!newTrade.entryPrice || !newTrade.size}
+                className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg font-bold mt-2"
+              >
+                İşlem Aç
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div >
   );
 };
