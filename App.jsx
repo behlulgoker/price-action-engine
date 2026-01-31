@@ -1,11 +1,16 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createChart, ColorType, CrosshairMode, CandlestickSeries } from 'lightweight-charts';
-import { RefreshCw, TrendingUp, AlertCircle, Calculator, MessageSquare, BarChart3, Search, Clock, ChevronDown, Maximize2, Minus, Plus, Pencil, Slash, MoveHorizontal, Trash2, List, X } from 'lucide-react';
+import { RefreshCw, TrendingUp, AlertCircle, Calculator, MessageSquare, BarChart3, Search, Clock, ChevronDown, Maximize2, Minus, Plus, Pencil, Slash, MoveHorizontal, Trash2, List, X, Power, Radar, XCircle, PlusCircle, Settings, ThumbsUp, ThumbsDown, Bot, Key } from 'lucide-react';
 
 // V3 Signal Engine Imports (Institutional Grade)
 import { analyzeV3, SignalMemory, findSwingPoints, findAllBOS, generateSwingDebugMarkers, generateBOSDebugMarkers } from './signalEngineV3.js';
 import { ConditionTracker, CONDITION_STATUS, getStatusIcon, getStatusColor, ELEMENT_TYPE, NEON_COLORS } from './conditionTracker.js';
 import { ZoneAnnotationPrimitive, NeonHighlightPrimitive, UniversalVisualRenderer, renderConditionVisuals, clearConditionVisuals, generateZoneLabel, autoZoomToEvent } from './visualAnnotations.js';
+import { BacktestEngine, formatBacktestReport } from './backtestEngine.js';
+import { ScannerEngine } from './scannerEngine.js';
+import { AgentEngine } from './agentEngine.js';
+import { useTranslation, LanguageSelector } from './i18n.jsx';
+
 
 // Trend Line Primitive for lightweight-charts v5
 class TrendLinePrimitive {
@@ -289,6 +294,9 @@ class RectanglePaneView {
 }
 
 const PriceActionEngine = () => {
+  // i18n hook for translations
+  const { t, language } = useTranslation();
+
   const [symbol, setSymbol] = useState(null);
   const [availableSymbols, setAvailableSymbols] = useState([]);
   const [recentSymbols, setRecentSymbols] = useState(() => {
@@ -331,11 +339,10 @@ const PriceActionEngine = () => {
   const [investment, setInvestment] = useState('10000');
   const [riskPercent, setRiskPercent] = useState(1);
   const [selectedSetup, setSelectedSetup] = useState(null);
-  const [chatMessages, setChatMessages] = useState([
-    { role: 'bot', text: 'Merhaba! Price action ve trading hakkında sorularınızı yanıtlayabilirim.' }
-  ]);
+  const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [showDebug, setShowDebug] = useState(false); // Visual Debug Mode
 
   // Trade Tracker State
   const [trades, setTrades] = useState(() => {
@@ -361,6 +368,59 @@ const PriceActionEngine = () => {
   const highlightPrimitiveRef = useRef(null); // For neon highlight on click
   const signalMemoryRef = useRef(new SignalMemory()); // Persistent memory
 
+  // Scanner State
+  const [watchlist, setWatchlist] = useState(() => {
+    const saved = localStorage.getItem('scannerWatchlist');
+    return saved ? JSON.parse(saved) : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'TRXUSDT', 'LINKUSDT', 'DOTUSDT'];
+  });
+  const [isScannerActive, setIsScannerActive] = useState(false);
+  const [scannerResults, setScannerResults] = useState({});
+  const [newSymbolInput, setNewSymbolInput] = useState('');
+  const [showScannerDropdown, setShowScannerDropdown] = useState(false);
+  const scannerEngineRef = useRef(null);
+  const scannerInputRef = useRef(null);
+
+  // AI Agent State
+  const [geminiApiKey, setGeminiApiKey] = useState(() =>
+    localStorage.getItem('geminiApiKey') || ''
+  );
+  const [aiEnabled, setAiEnabled] = useState(() => {
+    const saved = localStorage.getItem('aiMasterEnabled');
+    return saved ? JSON.parse(saved) : true;
+  });
+  const [verificationModal, setVerificationModal] = useState(null);
+  const [aiVerifications, setAiVerifications] = useState({});
+  const [userFeedback, setUserFeedback] = useState(() => {
+    const saved = localStorage.getItem('aiFeedback');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [showApiKey, setShowApiKey] = useState(false);
+  const agentEngineRef = useRef(null);
+
+  // AI Visual Bridge State
+  const [aiAnnotations, setAiAnnotations] = useState([]);
+  const aiPrimitivesRef = useRef([]); // Store PriceLine references for cleanup
+
+  // Initialize Agent Engine when API key changes
+  useEffect(() => {
+    if (geminiApiKey) {
+      console.log('🔑 API Key detected, initializing AgentEngine...');
+      agentEngineRef.current = new AgentEngine(geminiApiKey);
+      console.log('🤖 AgentEngine Ready');
+    } else {
+      console.warn('⚠️ No API Key found, AgentEngine paused');
+      agentEngineRef.current = null;
+    }
+  }, [geminiApiKey]);
+
+  // Set initial chat welcome message based on language
+  useEffect(() => {
+    if (chatMessages.length === 0) {
+      setChatMessages([{ role: 'bot', text: t('chat.welcome') }]);
+    }
+  }, [language, t]);
+
+
   const evaluateComplexity = (msg) => {
     const technicalKeywords = [
       'liquidity', 'order block', 'fvg', 'backtest', 'strategy',
@@ -385,18 +445,217 @@ const PriceActionEngine = () => {
 
   const routeMessageToModel = async (msg) => {
     const complexityScore = evaluateComplexity(msg);
+
+    // If AI Agent is available, use it for context-aware responses
+    if (agentEngineRef.current) {
+      try {
+        const result = await agentEngineRef.current.chatWithContext(
+          msg,
+          scannerResults,
+          chatMessages.slice(-5)
+        );
+        return {
+          text: result.text,
+          model: '🤖 Gemini AI Agent',
+          visualMarkers: result.visualMarkers // Pass visual markers up
+        };
+      } catch (err) {
+        console.error('AI Agent error:', err);
+        // Fall back to rule-based responses
+      }
+    }
+
+    // Fallback: Rule-based responses
     const useOpus = complexityScore >= 6;
     const modelName = useOpus ? 'Claude 4.5 Opus' : 'Gemini Pro';
 
     // Simulating API latency
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await new Promise(resolve => setTimeout(resolve, 500));
 
-    // For now, we combine the existing rule-based logic with the model routing simulation
     const baseResponse = getChatResponse(msg);
     return {
-      text: baseResponse + `\n\n[Analiz: ${modelName} tarafından gerçekleştirildi]`,
+      text: baseResponse + `\n\n[${geminiApiKey ? '⚠️ AI Hatası - ' : ''}Analiz: ${modelName} tarafından gerçekleştirildi]`,
       model: modelName
     };
+  };
+
+  const logFeedback = (symbol, signalType, isPositive) => {
+    const feedback = {
+      id: Date.now(),
+      symbol,
+      signalType,
+      type: isPositive ? 'positive' : 'negative',
+      timestamp: new Date().toISOString()
+    };
+
+    setUserFeedback(prev => {
+      const updated = [...prev, feedback];
+      localStorage.setItem('aiFeedback', JSON.stringify(updated));
+      return updated;
+    });
+
+    if (agentEngineRef.current) {
+      console.log('🤖 AI Feedback Logged:', feedback);
+    }
+  };
+
+  const verifySignalWithAI = async (targetSymbol, result) => {
+    if (!agentEngineRef.current || !aiEnabled) return;
+    if (targetSymbol !== symbol) {
+      alert('Lütfen önce sembolü grafikte açın.');
+      setSymbol(targetSymbol);
+      return;
+    }
+
+    setAiVerifications(prev => ({ ...prev, [targetSymbol]: { status: 'loading' } }));
+
+    try {
+      // Prepare visual structure data
+      const swings = findSwingPoints(candleData);
+      const visualMeta = {
+        orderBlocks: findOrderBlocks(candleData),
+        fvgs: findFVG(candleData),
+        trend: detectTrend(candleData),
+        swings
+      };
+
+      const analysis = await agentEngineRef.current.verifyHybridSetup(
+        targetSymbol,
+        result,
+        candleData,
+        visualMeta
+      );
+
+      setAiVerifications(prev => ({
+        ...prev,
+        [targetSymbol]: { status: 'complete', data: analysis }
+      }));
+      setVerificationModal({ symbol: targetSymbol, data: analysis });
+
+      // AUTO-RENDER VISUALS IF CONFIRMED OR CAUTION
+      if (analysis.visualMarkers && analysis.visualMarkers.length > 0) {
+        renderVisualMarkers(analysis.visualMarkers);
+      }
+
+    } catch (err) {
+      console.error('AI Verification Error:', err);
+      setAiVerifications(prev => ({ ...prev, [targetSymbol]: { status: 'error' } }));
+      alert('AI Analizi başarısız oldu.');
+    }
+  };
+
+  const verifyConditionWithAI = async (condition, setup) => {
+    if (!agentEngineRef.current || !aiEnabled) return;
+
+    // Show loading state on condition (optimistic UI or local state)
+    console.log('🤖 Verifying Condition:', condition.text);
+
+    try {
+      const analysis = await agentEngineRef.current.verifyHybridSetup(
+        symbol,
+        condition.text,
+        setup,
+        candleData
+      );
+
+      console.log('✅ Condition Verified:', analysis);
+
+      if (analysis.visualMarkers && analysis.visualMarkers.length > 0) {
+        renderVisualMarkers(analysis.visualMarkers);
+      }
+
+      // Update local state if needed (e.g., mark as verified)
+      // For now, we rely on the visual markers appearing
+
+    } catch (err) {
+      console.error('AI Verify Failed:', err);
+    }
+  };
+
+  const explainConditionWithAI = async (condition, setup) => {
+    if (!agentEngineRef.current || !aiEnabled) return;
+
+    setChatInput(`BU KOŞULU AÇIKLA: "${condition.text}" (Setup: ${setup.techniqueLabel})`);
+
+    // Trigger chat directly
+    const msg = `Lütfen şu koşulu detaylı açıkla, neden önemli?: "${condition.text}". Bu kurulum (${setup.techniqueLabel}) için neden kritik?`;
+
+    // Simulate chat submission
+    handleChatSubmit(null, msg);
+  };
+
+  const renderVisualMarkers = (markers) => {
+    console.log('🎯 renderVisualMarkers called with:', markers);
+
+    if (!candlestickSeriesRef.current) {
+      console.error('❌ Cannot render - candlestickSeriesRef is null');
+      return;
+    }
+
+    if (!markers || !Array.isArray(markers)) {
+      console.warn('⚠️ No valid markers array provided');
+      return;
+    }
+
+    // Clear existing AI primitives first to avoid clutter
+    clearAiDrawings();
+
+    // Filter and validate markers
+    const validMarkers = markers.filter(m => {
+      const hasPrice = typeof m.price === 'number' && !isNaN(m.price);
+      const hasZone = typeof m.top === 'number' && typeof m.bottom === 'number' && !isNaN(m.top) && !isNaN(m.bottom);
+      return hasPrice || hasZone;
+    });
+
+    console.log(`✅ ${validMarkers.length}/${markers.length} markers are valid`);
+
+    if (validMarkers.length === 0) {
+      console.warn('⚠️ No valid markers to render (need numeric price or top/bottom values)');
+      console.log('📋 Raw markers received:', JSON.stringify(markers, null, 2));
+      return;
+    }
+
+    validMarkers.forEach((marker, idx) => {
+      const color = marker.color || '#ffff00';
+      const linesToDraw = [];
+
+      if (typeof marker.top === 'number' && typeof marker.bottom === 'number') {
+        // Zone: Draw two lines for top and bottom
+        linesToDraw.push({ price: marker.top, title: `${marker.label || 'ZONE'} (Top)` });
+        linesToDraw.push({ price: marker.bottom, title: `${marker.label || 'ZONE'} (Bot)` });
+      } else if (typeof marker.price === 'number') {
+        // Single line
+        linesToDraw.push({ price: marker.price, title: marker.label || 'LEVEL' });
+      }
+
+      linesToDraw.forEach(item => {
+        console.log(`🖌️ Drawing line: ${item.title} @ ${item.price}`);
+        try {
+          const priceLine = candlestickSeriesRef.current.createPriceLine({
+            price: item.price,
+            color: color,
+            lineWidth: 2,
+            lineStyle: 2, // Dashed
+            axisLabelVisible: true,
+            title: '🤖 ' + item.title,
+          });
+          aiPrimitivesRef.current.push(priceLine);
+        } catch (err) {
+          console.error(`❌ Failed to draw line at ${item.price}:`, err);
+        }
+      });
+    });
+
+    console.log(`✅ Total ${aiPrimitivesRef.current.length} AI price lines drawn`);
+    setAiAnnotations(markers);
+  };
+
+  const clearAiDrawings = () => {
+    if (!candlestickSeriesRef.current) return;
+    aiPrimitivesRef.current.forEach(p => candlestickSeriesRef.current.removePriceLine(p));
+    aiPrimitivesRef.current = [];
+    setAiAnnotations([]);
+    console.log('🧹 AI Visuals Cleared');
   };
 
   const findSwingPoints = (data) => {
@@ -1357,16 +1616,49 @@ const PriceActionEngine = () => {
   const handleChatSubmit = async () => {
     if (!chatInput.trim() || isTyping) return;
 
-    const userMsg = { role: 'user', text: chatInput };
+    const currentMessage = chatInput;
+    const userMsg = { role: 'user', text: currentMessage };
+
+    // UI Update
     setChatMessages(prev => [...prev, userMsg]);
     setChatInput('');
     setIsTyping(true);
 
     try {
-      const response = await routeMessageToModel(chatInput);
-      setChatMessages(prev => [...prev, { role: 'bot', ...response }]);
+      // 1. Check AI Agent
+      if (agentEngineRef.current) {
+        console.log('📡 Sending to Gemini v1 via AgentEngine...', currentMessage);
+
+        const result = await agentEngineRef.current.chatWithContext(
+          currentMessage,
+          scannerResults,
+          chatMessages.slice(-5),
+          candleData // Pass candle data for accurate price context
+        );
+
+        console.log('🤖 AI Response received:', result);
+        console.log('🎨 Visual Markers:', result.visualMarkers);
+        setChatMessages(prev => [...prev, { role: 'bot', text: result.text, model: result.model }]);
+
+        // Render Visuals if present in Chat response
+        if (result.visualMarkers && result.visualMarkers.length > 0) {
+          console.log('🖌️ Rendering', result.visualMarkers.length, 'visual markers...');
+          renderVisualMarkers(result.visualMarkers);
+        } else if (result.visualMarkers && result.visualMarkers.length === 0) {
+          // AI returned empty array - user likely asked to clear
+          console.log('🧹 AI returned empty markers - clearing visuals');
+          clearAiDrawings();
+        }
+
+      } else {
+        // 2. Fallback to offline/rule-based
+        console.warn('⚠️ AgentEngine not active. Using offline rules.');
+        const response = await routeMessageToModel(currentMessage);
+        setChatMessages(prev => [...prev, { role: 'bot', ...response }]);
+      }
     } catch (err) {
-      setChatMessages(prev => [...prev, { role: 'bot', text: 'Bir hata oluştu. Lütfen tekrar deneyin.' }]);
+      console.error('❌ Chat Error:', err);
+      setChatMessages(prev => [...prev, { role: 'bot', text: 'Bağlantı hatası: ' + err.message }]);
     } finally {
       setIsTyping(false);
     }
@@ -2021,6 +2313,71 @@ GRAFİKTE: Sweep edilen seviye + geri dönüş noktası işaretlenir`;
     localStorage.setItem('trades', JSON.stringify(trades));
   }, [trades]);
 
+  // Persist watchlist to localStorage
+  useEffect(() => {
+    localStorage.setItem('scannerWatchlist', JSON.stringify(watchlist));
+  }, [watchlist]);
+
+  // Scanner loop effect
+  useEffect(() => {
+    if (!isScannerActive || watchlist.length === 0) {
+      // Abort any pending scan when disabled
+      scannerEngineRef.current?.abort();
+      return;
+    }
+
+    let isMounted = true;
+
+    const runScan = async () => {
+      console.log('🔍 Starting scanner with', watchlist.length, 'pairs');
+
+      const engine = new ScannerEngine({
+        watchlist,
+        delayMs: 150,
+        timeframe: timeframe,
+        limit: 200,
+        onProgress: (progress) => {
+          if (isMounted) {
+            // Update results incrementally as they come in
+            setScannerResults(prev => ({
+              ...prev,
+              [progress.symbol]: progress.result
+            }));
+          }
+        }
+      });
+
+      scannerEngineRef.current = engine;
+
+      try {
+        const results = await engine.scan();
+        if (isMounted) {
+          setScannerResults(results);
+        }
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          console.error('Scanner error:', err);
+        }
+      }
+    };
+
+    // Initial scan
+    runScan();
+
+    // Rescan every 60 seconds
+    const intervalId = setInterval(() => {
+      if (isScannerActive && isMounted) {
+        runScan();
+      }
+    }, 60000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(intervalId);
+      scannerEngineRef.current?.abort();
+    };
+  }, [isScannerActive, watchlist, timeframe]);
+
   // V3 Signal Engine Analysis
   useEffect(() => {
     if (!candleData || candleData.length < 20) return;
@@ -2056,6 +2413,138 @@ GRAFİKTE: Sweep edilen seviye + geri dönüş noktası işaretlenir`;
       console.warn('V3 Analysis error:', error);
     }
   }, [candleData, currentSetup, symbol]);
+
+  // 🐞 Visual Debug Mode - Render Entry/SL markers for sanity checking
+  useEffect(() => {
+    if (!candlestickSeriesRef.current || !candleData || candleData.length === 0) return;
+
+    // Clear existing markers when debug mode is off
+    if (!showDebug) {
+      try {
+        if (typeof candlestickSeriesRef.current?.setMarkers === 'function') {
+          candlestickSeriesRef.current.setMarkers([]);
+        }
+      } catch (err) {
+        console.warn('Failed to clear markers:', err);
+      }
+      return;
+    }
+
+    // Get current setups from the generateSetups useMemo (we need to access it)
+    // For now, use the last few candles as demo entry/stop points
+    // In production, this would iterate through actual setups
+
+    const markers = [];
+    const lastCandle = candleData[candleData.length - 1];
+    const lastIndex = candleData.length - 1;
+
+    // Find the current setup if one is selected
+    if (currentSetup) {
+      // Entry marker
+      if (currentSetup.entry && currentSetup.entry.length >= 2) {
+        const entryPrice = (currentSetup.entry[0] + currentSetup.entry[1]) / 2;
+
+        // Find candle closest to entry price in recent history
+        let entryIndex = lastIndex;
+        for (let i = lastIndex; i >= Math.max(0, lastIndex - 50); i--) {
+          const candle = candleData[i];
+          if (candle.low <= entryPrice && candle.high >= entryPrice) {
+            entryIndex = i;
+            break;
+          }
+        }
+
+        markers.push({
+          time: candleData[entryIndex].time,
+          position: currentSetup.direction === 'long' ? 'belowBar' : 'aboveBar',
+          color: '#FFFF00', // Bright Yellow
+          shape: currentSetup.direction === 'long' ? 'arrowUp' : 'arrowDown',
+          text: `ENTRY $${entryPrice.toFixed(0)}`
+        });
+
+        // Entry zone high marker
+        markers.push({
+          time: candleData[entryIndex].time,
+          position: 'aboveBar',
+          color: '#00FF00', // Bright Green
+          shape: 'circle',
+          text: `Zone H: $${currentSetup.entry[1].toFixed(0)}`
+        });
+
+        // Entry zone low marker  
+        markers.push({
+          time: candleData[entryIndex].time,
+          position: 'belowBar',
+          color: '#00FF00',
+          shape: 'circle',
+          text: `Zone L: $${currentSetup.entry[0].toFixed(0)}`
+        });
+      }
+
+      // Stop Loss marker
+      if (currentSetup.stop) {
+        markers.push({
+          time: lastCandle.time,
+          position: currentSetup.direction === 'long' ? 'belowBar' : 'aboveBar',
+          color: '#FF00FF', // Fuchsia
+          shape: 'circle',
+          text: `SL $${currentSetup.stop.toFixed(0)}`
+        });
+      }
+
+      // Take Profit markers
+      if (currentSetup.targets && currentSetup.targets.length > 0) {
+        currentSetup.targets.forEach((tp, i) => {
+          markers.push({
+            time: lastCandle.time,
+            position: currentSetup.direction === 'long' ? 'aboveBar' : 'belowBar',
+            color: '#00FFFF', // Cyan
+            shape: 'circle',
+            text: `TP${i + 1} $${tp.level.toFixed(0)}`
+          });
+        });
+      }
+    }
+
+    // Debug: Show swing points from V3 analysis
+    if (v3Analysis?.swingPoints) {
+      // Last 5 swing highs
+      v3Analysis.swingPoints.highs?.slice(-5).forEach(sh => {
+        if (candleData[sh.index]) {
+          markers.push({
+            time: candleData[sh.index].time,
+            position: 'aboveBar',
+            color: '#FF6B6B', // Light Red
+            shape: 'circle',
+            text: 'SH'
+          });
+        }
+      });
+
+      // Last 5 swing lows
+      v3Analysis.swingPoints.lows?.slice(-5).forEach(sl => {
+        if (candleData[sl.index]) {
+          markers.push({
+            time: candleData[sl.index].time,
+            position: 'belowBar',
+            color: '#4ECDC4', // Teal
+            shape: 'circle',
+            text: 'SL'
+          });
+        }
+      });
+    }
+
+    console.log('🐞 Debug markers rendered:', markers.length);
+    try {
+      if (typeof candlestickSeriesRef.current?.setMarkers === 'function') {
+        candlestickSeriesRef.current.setMarkers(markers);
+      }
+    } catch (err) {
+      console.warn('Failed to set markers:', err);
+    }
+
+  }, [showDebug, candleData, currentSetup, v3Analysis]);
 
   // Click-to-zoom handler for conditions - Universal Visual Protocol
   // MENTOR-STYLE: Zooms and shows educational visuals for BOTH Long AND Short
@@ -2516,19 +3005,46 @@ GRAFİKTE: Sweep edilen seviye + geri dönüş noktası işaretlenir`;
                 {/* Recent Symbols */}
                 {recentSymbols.length > 0 && !searchTerm && (
                   <div className="p-2 border-b border-gray-700">
-                    <div className="flex items-center gap-1 text-xs text-gray-400 mb-2">
-                      <Clock size={12} />
-                      <span>Son Kullanılanlar</span>
+                    <div className="flex items-center justify-between text-xs text-gray-400 mb-2">
+                      <div className="flex items-center gap-1">
+                        <Clock size={12} />
+                        <span>Son Kullanılanlar</span>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setRecentSymbols([]);
+                          localStorage.setItem('recentSymbols', JSON.stringify([]));
+                        }}
+                        className="text-[10px] text-gray-500 hover:text-red-400 transition-colors"
+                      >
+                        Temizle
+                      </button>
                     </div>
                     <div className="flex flex-wrap gap-1">
                       {recentSymbols.map(s => (
-                        <button
+                        <div
                           key={s}
-                          onClick={() => handleSymbolSelect(s)}
-                          className="px-2 py-1 text-xs bg-gray-700 hover:bg-blue-600 rounded"
+                          className="group relative flex items-center bg-gray-700 rounded overflow-hidden"
                         >
-                          {s.replace('USDT', '')}
-                        </button>
+                          <button
+                            onClick={() => handleSymbolSelect(s)}
+                            className="px-2 py-1 text-xs hover:bg-blue-600 transition-colors"
+                          >
+                            {s.replace('USDT', '')}
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const updated = recentSymbols.filter(sym => sym !== s);
+                              setRecentSymbols(updated);
+                              localStorage.setItem('recentSymbols', JSON.stringify(updated));
+                            }}
+                            className="px-1 py-1 text-gray-500 hover:text-red-400 hover:bg-gray-600 transition-colors opacity-0 group-hover:opacity-100"
+                            title="Kaldır"
+                          >
+                            <X size={10} />
+                          </button>
+                        </div>
                       ))}
                     </div>
                   </div>
@@ -2654,6 +3170,51 @@ GRAFİKTE: Sweep edilen seviye + geri dönüş noktası işaretlenir`;
                     <Trash2 size={16} />
                   </button>
                 )}
+
+                {/* Backtest Button */}
+                <button
+                  onClick={() => {
+                    if (!candleData || candleData.length < 100) {
+                      alert('❌ Backtest için minimum 100 mum gerekli!');
+                      return;
+                    }
+                    console.log('🧪 Starting backtest with', candleData.length, 'candles...');
+
+                    const engine = new BacktestEngine(1000);
+                    const report = engine.run(candleData);
+
+                    if (report.success) {
+                      console.log('\n' + formatBacktestReport(report));
+                      console.table(report.tradeLog);
+
+                      alert(`🧪 BACKTEST SONUÇLARI\n\n` +
+                        `📊 Toplam Trade: ${report.summary.totalTrades}\n` +
+                        `✅ Win Rate: ${report.summary.winRate.toFixed(1)}%\n` +
+                        `💰 Net Kar: $${report.summary.netProfit.toFixed(2)} (${report.summary.netProfitPercent.toFixed(1)}%)\n` +
+                        `📉 Max Drawdown: ${report.summary.maxDrawdown.toFixed(1)}%\n` +
+                        `⚖️ Profit Factor: ${report.summary.profitFactor.toFixed(2)}\n\n` +
+                        `Detaylar için Console'a bakın.`);
+                    } else {
+                      alert('❌ Backtest hatası: ' + report.error);
+                    }
+                  }}
+                  className="p-2 rounded flex items-center gap-1 bg-indigo-600 hover:bg-indigo-500 text-white"
+                  title="Strateji Backtest"
+                >
+                  <span>🧪</span>
+                  <span className="text-xs hidden sm:inline">Test</span>
+                </button>
+
+                {/* Debug Mode Checkbox */}
+                <label className="flex items-center gap-1.5 px-2 py-1 bg-gray-700 rounded cursor-pointer hover:bg-gray-600 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={showDebug}
+                    onChange={(e) => setShowDebug(e.target.checked)}
+                    className="w-3 h-3 accent-fuchsia-500"
+                  />
+                  <span className="text-xs text-gray-300">🐞 Debug</span>
+                </label>
               </div>
 
               {/* Line Manager Panel */}
@@ -2753,8 +3314,10 @@ GRAFİKTE: Sweep edilen seviye + geri dönüş noktası işaretlenir`;
           <div className="flex border-b border-gray-700">
             {[
               { id: 'setups', icon: BarChart3, label: 'Setups' },
+              { id: 'scanner', icon: Radar, label: 'Scanner' },
               { id: 'trades', icon: Calculator, label: 'Trades' },
-              { id: 'chat', icon: MessageSquare, label: 'Chat' }
+              { id: 'chat', icon: MessageSquare, label: 'Chat' },
+              { id: 'settings', icon: Settings, label: '' }
             ].map(tab => (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)}
                 className={`flex-1 flex items-center justify-center gap-2 py-3 ${activeTab === tab.id ? 'bg-gray-700 text-blue-400' : 'text-gray-400'}`}>
@@ -2951,7 +3514,30 @@ GRAFİKTE: Sweep edilen seviye + geri dönüş noktası işaretlenir`;
                                             <div className="text-[9px] opacity-70">{cond.result.message}</div>
                                           )}
                                         </div>
-                                        <span className="text-[10px] opacity-60">🔍</span>
+
+                                        <div className="flex gap-1 ml-2 z-20">
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              verifyConditionWithAI(cond, setup);
+                                            }}
+                                            className="px-1.5 py-0.5 bg-blue-900/50 hover:bg-blue-600 rounded text-[9px] text-blue-200 transition-colors border border-blue-500/30"
+                                            title="AI ile Doğrula & Çiz"
+                                          >
+                                            🤖 Verify
+                                          </button>
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              explainConditionWithAI(cond, setup);
+                                            }}
+                                            className="px-1.5 py-0.5 bg-purple-900/50 hover:bg-purple-600 rounded text-[9px] text-purple-200 transition-colors border border-purple-500/30"
+                                            title="Detaylı Açıklama"
+                                          >
+                                            🎓 Explain
+                                          </button>
+                                        </div>
+                                        <span className="text-[10px] opacity-60 ml-1">🔍</span>
                                       </div>
                                     ))}
                                   </div>
@@ -3118,7 +3704,29 @@ GRAFİKTE: Sweep edilen seviye + geri dönüş noktası işaretlenir`;
                                         <div className="flex-1">
                                           <div>{conf}</div>
                                         </div>
-                                        <span className="text-[10px] opacity-60 text-red-400">🔍</span>
+                                        <div className="flex gap-1 ml-2 z-20">
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              verifyConditionWithAI({ text: conf }, setup);
+                                            }}
+                                            className="px-1.5 py-0.5 bg-red-900/50 hover:bg-red-600 rounded text-[9px] text-red-200 transition-colors border border-red-500/30"
+                                            title="AI ile Doğrula & Çiz"
+                                          >
+                                            🤖 Verify
+                                          </button>
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              explainConditionWithAI({ text: conf }, setup);
+                                            }}
+                                            className="px-1.5 py-0.5 bg-purple-900/50 hover:bg-purple-600 rounded text-[9px] text-purple-200 transition-colors border border-purple-500/30"
+                                            title="Detaylı Açıklama"
+                                          >
+                                            🎓 Explain
+                                          </button>
+                                        </div>
+                                        <span className="text-[10px] opacity-60 text-red-400 ml-1">🔍</span>
                                       </div>
                                     ))}
                                   </div>
@@ -3309,7 +3917,17 @@ GRAFİKTE: Sweep edilen seviye + geri dönüş noktası işaretlenir`;
 
             {activeTab === 'chat' && (
               <div className="flex flex-col h-full">
-                <h3 className="text-lg font-bold text-blue-400 mb-4">AI CHAT</h3>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-bold text-blue-400">AI CHAT</h3>
+                  {aiAnnotations.length > 0 && (
+                    <button
+                      onClick={clearAiDrawings}
+                      className="text-xs px-2 py-1 bg-gray-700 hover:bg-red-600 text-gray-300 hover:text-white rounded flex items-center gap-1 transition-colors"
+                    >
+                      <Trash2 size={12} /> 🤖 AI Çizimlerini Temizle
+                    </button>
+                  )}
+                </div>
                 <div className="flex-1 overflow-y-auto space-y-3 mb-4">
                   {chatMessages.map((msg, idx) => (
                     <div key={idx} className={`p-3 rounded-lg ${msg.role === 'user' ? 'bg-blue-600 ml-8' : 'bg-gray-700 mr-8'}`}>
@@ -3334,121 +3952,526 @@ GRAFİKTE: Sweep edilen seviye + geri dönüş noktası işaretlenir`;
                 </div>
               </div>
             )}
+
+            {activeTab === 'scanner' && (
+              <div className="space-y-4">
+                {/* Header with Power Toggle */}
+                <div className="flex items-center justify-between bg-gradient-to-r from-cyan-900/50 to-gray-800 rounded-lg p-3 border border-cyan-700/30">
+                  <div className="flex items-center gap-2">
+                    <Radar size={20} className={`${isScannerActive ? 'text-cyan-400 animate-pulse' : 'text-gray-500'}`} />
+                    <span className="font-bold text-cyan-300">{t('scanner.title').replace('📡 ', '')}</span>
+                  </div>
+                  <button
+                    onClick={() => setIsScannerActive(!isScannerActive)}
+                    className={`p-2 rounded-full transition-all duration-300 ${isScannerActive
+                      ? 'bg-green-600 text-white shadow-lg shadow-green-600/50'
+                      : 'bg-gray-600 text-gray-400 hover:bg-gray-500'}`}
+                    title={isScannerActive ? t('scanner.powerOn') : t('scanner.powerOff')}
+                  >
+                    <Power size={18} />
+                  </button>
+                </div>
+
+                {/* Status Indicator */}
+                <div className={`text-xs px-3 py-1.5 rounded-full text-center ${isScannerActive
+                  ? 'bg-green-900/50 text-green-400 border border-green-700/50'
+                  : 'bg-gray-700/50 text-gray-500'}`}>
+                  {isScannerActive ? `🟢 ${t('scanner.powerOn')}` : `⚫ ${t('scanner.powerOff')}`}
+                </div>
+
+                {/* Add Symbol Input with Autocomplete */}
+                <div className="relative">
+                  <div className="flex gap-2">
+                    <input
+                      ref={scannerInputRef}
+                      type="text"
+                      value={newSymbolInput}
+                      onChange={(e) => {
+                        const val = e.target.value.toUpperCase();
+                        setNewSymbolInput(val);
+                        setShowScannerDropdown(val.length > 0);
+                      }}
+                      onFocus={() => setShowScannerDropdown(newSymbolInput.length > 0)}
+                      onBlur={() => setTimeout(() => setShowScannerDropdown(false), 200)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') {
+                          setShowScannerDropdown(false);
+                          setNewSymbolInput('');
+                        }
+                      }}
+                      placeholder={t('scanner.addSymbol')}
+                      className="flex-1 bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none"
+                    />
+                  </div>
+
+                  {/* Autocomplete Dropdown */}
+                  {showScannerDropdown && newSymbolInput.length > 0 && (
+                    <div className="absolute z-20 w-full mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-xl max-h-48 overflow-y-auto">
+                      {availableSymbols
+                        .filter(s =>
+                          s.symbol.includes(newSymbolInput) ||
+                          s.baseAsset.includes(newSymbolInput)
+                        )
+                        .slice(0, 10)
+                        .map(s => {
+                          const alreadyInList = watchlist.includes(s.symbol);
+                          return (
+                            <button
+                              key={s.symbol}
+                              onClick={() => {
+                                if (!alreadyInList) {
+                                  setWatchlist(prev => [...prev, s.symbol]);
+                                }
+                                setNewSymbolInput('');
+                                setShowScannerDropdown(false);
+                              }}
+                              disabled={alreadyInList}
+                              className={`w-full flex items-center justify-between px-3 py-2 text-left text-sm transition-colors
+                                ${alreadyInList
+                                  ? 'bg-gray-700/50 text-gray-500 cursor-not-allowed'
+                                  : 'hover:bg-cyan-900/50 hover:text-cyan-300'}`}
+                            >
+                              <span>
+                                <span className="font-bold">{s.baseAsset}</span>
+                                <span className="text-gray-500">/USDT</span>
+                              </span>
+                              {alreadyInList && (
+                                <span className="text-[10px] text-gray-500">Listede</span>
+                              )}
+                            </button>
+                          );
+                        })
+                      }
+                      {availableSymbols.filter(s =>
+                        s.symbol.includes(newSymbolInput) ||
+                        s.baseAsset.includes(newSymbolInput)
+                      ).length === 0 && (
+                          <div className="px-3 py-2 text-sm text-gray-500 text-center">
+                            ❌ Geçerli sembol bulunamadı
+                          </div>
+                        )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Watchlist */}
+                <div className="space-y-1 max-h-96 overflow-y-auto">
+                  <div className="text-xs text-gray-400 mb-2 flex justify-between items-center">
+                    <span>📋 Watchlist ({watchlist.length})</span>
+                    {watchlist.length > 0 && (
+                      <button
+                        onClick={() => setWatchlist([])}
+                        className="text-red-400 hover:text-red-300 text-[10px]"
+                      >
+                        Temizle
+                      </button>
+                    )}
+                  </div>
+                  {watchlist.map(sym => {
+                    const result = scannerResults[sym];
+                    const signalColor = result?.signal === 'long'
+                      ? 'bg-green-600 text-white'
+                      : result?.signal === 'short'
+                        ? 'bg-red-600 text-white'
+                        : result?.signal === 'error'
+                          ? 'bg-yellow-600 text-white'
+                          : 'bg-gray-600 text-gray-300';
+
+                    return (
+                      <div
+                        key={sym}
+                        onClick={() => {
+                          try {
+                            setSymbol(sym);
+                            // Symbol change will trigger fetchCandleData via useEffect
+                          } catch (err) {
+                            console.error('Symbol switch error:', err);
+                          }
+                        }}
+                        className={`flex items-center justify-between p-2 rounded cursor-pointer transition-all
+                          ${symbol === sym
+                            ? 'bg-cyan-800/50 border border-cyan-500/50'
+                            : 'bg-gray-700/50 hover:bg-gray-600/50 border border-transparent'}`}
+                      >
+                        <div className="flex flex-col">
+                          <span className="font-mono text-sm font-bold">
+                            {sym.replace('USDT', '')}<span className="text-gray-500 font-normal">/USDT</span>
+                          </span>
+                          {result?.lastPrice && (
+                            <span className="text-[10px] text-gray-500">
+                              ${result.lastPrice.toLocaleString()}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          {/* Signal Badge with Confidence */}
+                          {result ? (
+                            <div className="flex items-center gap-1">
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${signalColor}`}>
+                                {result.signal === 'long' ? '🟢 LONG'
+                                  : result.signal === 'short' ? '🔴 SHORT'
+                                    : result.signal === 'error' ? '⚠️'
+                                      : '—'}
+                              </span>
+                              {result.confidence > 0 && (
+                                <span className={`text-[9px] px-1 py-0.5 rounded ${result.signal === 'long' ? 'bg-green-900/50 text-green-300'
+                                  : result.signal === 'short' ? 'bg-red-900/50 text-red-300'
+                                    : 'bg-gray-700 text-gray-400'
+                                  }`}>
+                                  {result.confidence}%
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-[10px] text-gray-500">—</span>
+                          )}
+
+                          {/* Feedback Buttons */}
+                          {result && result.signal !== 'none' && (
+                            <div className="flex items-center gap-1 mx-1 border-l border-gray-600 pl-1.5 py-0.5">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  logFeedback(sym, result.signal, true);
+                                }}
+                                className="text-gray-600 hover:text-green-400 p-0.5 rounded transition-colors group"
+                                title="Doğru Sinyal"
+                              >
+                                <ThumbsUp size={12} className="group-active:scale-90" />
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  logFeedback(sym, result.signal, false);
+                                }}
+                                className="text-gray-600 hover:text-red-400 p-0.5 rounded transition-colors group"
+                                title="Yanlış Sinyal"
+                              >
+                                <ThumbsDown size={12} className="group-active:scale-90" />
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Verify/Explain Button */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              verifySignalWithAI(sym, result);
+                            }}
+                            disabled={!aiEnabled || !geminiApiKey}
+                            className={`ml-1 p-1 rounded transition-all relative group
+                              ${aiVerifications[sym]?.status === 'loading' ? 'bg-yellow-900/30 text-yellow-500 animate-pulse' :
+                                aiVerifications[sym]?.status === 'complete' ? 'bg-blue-900/30 text-blue-400 hover:bg-blue-800' :
+                                  'bg-gray-700 text-gray-400 hover:text-white hover:bg-gray-600'}`}
+                            title="AI Mentor: Analiz Et & Açıkla"
+                          >
+                            <Search size={14} />
+                            {aiVerifications[sym]?.status === 'complete' && (
+                              <span className="absolute -top-1 -right-1 flex h-2 w-2">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                              </span>
+                            )}
+                          </button>
+                          {/* Delete Button */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setWatchlist(prev => prev.filter(s => s !== sym));
+                            }}
+                            className="text-gray-500 hover:text-red-400 transition-colors ml-1"
+                            title="Kaldır"
+                          >
+                            <XCircle size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Scanner Stats */}
+                {Object.keys(scannerResults).length > 0 && (
+                  <div className="bg-gray-700/30 rounded-lg p-3 border border-gray-600 mt-4">
+                    <div className="text-xs font-bold text-gray-300 mb-2">{t('scanner.summary')}</div>
+                    <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                      <div className="bg-green-900/30 rounded p-2">
+                        <div className="text-green-400 font-bold">
+                          {Object.values(scannerResults).filter(r => r.signal === 'long').length}
+                        </div>
+                        <div className="text-gray-500">{t('scanner.signals.long')}</div>
+                      </div>
+                      <div className="bg-red-900/30 rounded p-2">
+                        <div className="text-red-400 font-bold">
+                          {Object.values(scannerResults).filter(r => r.signal === 'short').length}
+                        </div>
+                        <div className="text-gray-500">{t('scanner.signals.short')}</div>
+                      </div>
+                      <div className="bg-gray-800 rounded p-2">
+                        <div className="text-gray-400 font-bold">
+                          {Object.values(scannerResults).filter(r => r.signal === 'none').length}
+                        </div>
+                        <div className="text-gray-500">{t('scanner.signals.none')}</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            {/* End Scanner Tab */}
+
+            {/* Settings Tab */}
+            {activeTab === 'settings' && (
+              <div className="space-y-4">
+                {/* Language Selector */}
+                <div className="flex items-center justify-between bg-gray-700/50 rounded-lg p-3 border border-gray-600">
+                  <span className="text-sm text-gray-300">{t('settings.language')}</span>
+                  <LanguageSelector />
+                </div>
+
+                {/* Header */}
+                <div className="flex items-center gap-2 bg-gradient-to-r from-purple-900/50 to-gray-800 rounded-lg p-3 border border-purple-700/30">
+                  <Bot size={20} className={`${geminiApiKey ? 'text-purple-400' : 'text-gray-500'}`} />
+                  <span className="font-bold text-purple-300">{t('settings.title')}</span>
+                </div>
+
+                {/* AI Status & Master Toggle */}
+                <div className={`flex items-center justify-between px-3 py-3 rounded-lg border ${aiEnabled && geminiApiKey
+                  ? 'bg-green-900/20 border-green-500/30'
+                  : 'bg-gray-700/30 border-gray-600'
+                  }`}>
+                  <div className="flex items-center gap-3">
+                    <div className={`p-2 rounded-full ${aiEnabled && geminiApiKey ? 'bg-green-500/20 text-green-400' : 'bg-gray-600/50 text-gray-400'}`}>
+                      <Bot size={20} />
+                    </div>
+                    <div>
+                      <div className="text-sm font-bold text-gray-200">{t('settings.aiMentorMode')}</div>
+                      <div className="text-[10px] text-gray-400">
+                        {aiEnabled ? (geminiApiKey ? t('settings.active') : t('settings.apiKeyMissing')) : t('settings.disabled')}
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      const newState = !aiEnabled;
+                      setAiEnabled(newState);
+                      localStorage.setItem('aiMasterEnabled', JSON.stringify(newState));
+                    }}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${aiEnabled ? 'bg-green-600' : 'bg-gray-600'
+                      }`}
+                  >
+                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${aiEnabled ? 'translate-x-6' : 'translate-x-1'
+                      }`} />
+                  </button>
+                </div>
+
+                {/* API Key Input */}
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 text-sm text-gray-400">
+                    <Key size={14} />
+                    {t('settings.geminiApiKey')}
+                  </label>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <input
+                        type={showApiKey ? 'text' : 'password'}
+                        value={geminiApiKey}
+                        onChange={(e) => setGeminiApiKey(e.target.value)}
+                        placeholder="AIzaSy..."
+                        className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm focus:border-purple-500 focus:outline-none pr-16"
+                      />
+                      <button
+                        onClick={() => setShowApiKey(!showApiKey)}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-xs"
+                      >
+                        {showApiKey ? t('common.hide') : t('common.show')}
+                      </button>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      localStorage.setItem('geminiApiKey', geminiApiKey);
+                      alert(t('settings.apiKeySaved'));
+                    }}
+                    className="w-full py-2 bg-purple-600 hover:bg-purple-500 rounded text-sm font-bold transition-colors"
+                  >
+                    {t('common.save')}
+                  </button>
+                </div>
+
+                {/* Get API Key Link */}
+                <div className="text-xs text-gray-500 text-center">
+                  <a
+                    href="https://aistudio.google.com/app/apikey"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-purple-400 hover:text-purple-300 underline"
+                  >
+                    {t('settings.getApiKey')}
+                  </a>
+                </div>
+
+                {/* Feedback History */}
+                {userFeedback.length > 0 && (
+                  <div className="bg-gray-700/30 rounded-lg p-3 border border-gray-600">
+                    <div className="flex items-center justify-between text-xs mb-2">
+                      <span className="font-bold text-gray-300">{t('settings.feedbackHistory')}</span>
+                      <button
+                        onClick={() => {
+                          setUserFeedback([]);
+                          localStorage.setItem('aiFeedback', '[]');
+                        }}
+                        className="text-gray-500 hover:text-red-400"
+                      >
+                        {t('common.clear')}
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-center text-xs">
+                      <div className="bg-green-900/30 rounded p-2">
+                        <div className="text-green-400 font-bold">
+                          {userFeedback.filter(f => f.type === 'positive').length}
+                        </div>
+                        <div className="text-gray-500">{t('settings.positive')}</div>
+                      </div>
+                      <div className="bg-red-900/30 rounded p-2">
+                        <div className="text-red-400 font-bold">
+                          {userFeedback.filter(f => f.type === 'negative').length}
+                        </div>
+                        <div className="text-gray-500">{t('settings.negative')}</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* AI Info */}
+                <div className="bg-gray-700/20 rounded-lg p-3 text-xs text-gray-500">
+                  <p className="mb-2">{t('settings.aiFeatures')}</p>
+                  <ul className="list-disc list-inside space-y-1">
+                    {t('settings.featureList').map((feature, idx) => (
+                      <li key={idx}>{feature}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )}
+
+            {/* Trade Modal */}
+            {showTradeModal && (
+              <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+                <div className="bg-gray-800 rounded-xl p-6 w-96 border border-gray-700">
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-xl font-bold text-blue-400">📝 Yeni İşlem</h3>
+                    <button onClick={() => setShowTradeModal(false)} className="text-gray-400 hover:text-white">
+                      <X size={20} />
+                    </button>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-xs text-gray-400">Pair</label>
+                      <input
+                        type="text"
+                        value={newTrade.pair}
+                        onChange={(e) => setNewTrade(prev => ({ ...prev, pair: e.target.value }))}
+                        className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
+                        placeholder="BTCUSDT"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs text-gray-400">Yön</label>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setNewTrade(prev => ({ ...prev, direction: 'long' }))}
+                          className={`flex-1 py-2 rounded font-bold ${newTrade.direction === 'long' ? 'bg-green-600' : 'bg-gray-700'}`}
+                        >
+                          LONG
+                        </button>
+                        <button
+                          onClick={() => setNewTrade(prev => ({ ...prev, direction: 'short' }))}
+                          className={`flex-1 py-2 rounded font-bold ${newTrade.direction === 'short' ? 'bg-red-600' : 'bg-gray-700'}`}
+                        >
+                          SHORT
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-xs text-gray-400">Entry Price</label>
+                        <input
+                          type="number"
+                          value={newTrade.entryPrice}
+                          onChange={(e) => setNewTrade(prev => ({ ...prev, entryPrice: e.target.value }))}
+                          className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
+                          placeholder="0.00"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400">Position Size ($)</label>
+                        <input
+                          type="number"
+                          value={newTrade.size}
+                          onChange={(e) => setNewTrade(prev => ({ ...prev, size: e.target.value }))}
+                          className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
+                          placeholder="100"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-xs text-gray-400">Stop Loss</label>
+                        <input
+                          type="number"
+                          value={newTrade.stopLoss}
+                          onChange={(e) => setNewTrade(prev => ({ ...prev, stopLoss: e.target.value }))}
+                          className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
+                          placeholder="Opsiyonel"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400">Take Profit</label>
+                        <input
+                          type="number"
+                          value={newTrade.takeProfit}
+                          onChange={(e) => setNewTrade(prev => ({ ...prev, takeProfit: e.target.value }))}
+                          className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
+                          placeholder="Opsiyonel"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs text-gray-400">Not</label>
+                      <input
+                        type="text"
+                        value={newTrade.notes}
+                        onChange={(e) => setNewTrade(prev => ({ ...prev, notes: e.target.value }))}
+                        className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
+                        placeholder="OB long, HTF trend uyumu..."
+                      />
+                    </div>
+
+                    <button
+                      onClick={openTrade}
+                      disabled={!newTrade.entryPrice || !newTrade.size}
+                      className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg font-bold mt-2"
+                    >
+                      İşlem Aç
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* End Tab Content Container */}
           </div>
         </div>
       </div>
-
-      {/* Trade Modal */}
-      {showTradeModal && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-gray-800 rounded-xl p-6 w-96 border border-gray-700">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold text-blue-400">📝 Yeni İşlem</h3>
-              <button onClick={() => setShowTradeModal(false)} className="text-gray-400 hover:text-white">
-                <X size={20} />
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              <div>
-                <label className="text-xs text-gray-400">Pair</label>
-                <input
-                  type="text"
-                  value={newTrade.pair}
-                  onChange={(e) => setNewTrade(prev => ({ ...prev, pair: e.target.value }))}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
-                  placeholder="BTCUSDT"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs text-gray-400">Yön</label>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => setNewTrade(prev => ({ ...prev, direction: 'long' }))}
-                    className={`flex-1 py-2 rounded font-bold ${newTrade.direction === 'long' ? 'bg-green-600' : 'bg-gray-700'}`}
-                  >
-                    LONG
-                  </button>
-                  <button
-                    onClick={() => setNewTrade(prev => ({ ...prev, direction: 'short' }))}
-                    className={`flex-1 py-2 rounded font-bold ${newTrade.direction === 'short' ? 'bg-red-600' : 'bg-gray-700'}`}
-                  >
-                    SHORT
-                  </button>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-xs text-gray-400">Entry Price</label>
-                  <input
-                    type="number"
-                    value={newTrade.entryPrice}
-                    onChange={(e) => setNewTrade(prev => ({ ...prev, entryPrice: e.target.value }))}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
-                    placeholder="0.00"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-gray-400">Position Size ($)</label>
-                  <input
-                    type="number"
-                    value={newTrade.size}
-                    onChange={(e) => setNewTrade(prev => ({ ...prev, size: e.target.value }))}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
-                    placeholder="100"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-xs text-gray-400">Stop Loss</label>
-                  <input
-                    type="number"
-                    value={newTrade.stopLoss}
-                    onChange={(e) => setNewTrade(prev => ({ ...prev, stopLoss: e.target.value }))}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
-                    placeholder="Opsiyonel"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-gray-400">Take Profit</label>
-                  <input
-                    type="number"
-                    value={newTrade.takeProfit}
-                    onChange={(e) => setNewTrade(prev => ({ ...prev, takeProfit: e.target.value }))}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
-                    placeholder="Opsiyonel"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="text-xs text-gray-400">Not</label>
-                <input
-                  type="text"
-                  value={newTrade.notes}
-                  onChange={(e) => setNewTrade(prev => ({ ...prev, notes: e.target.value }))}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded"
-                  placeholder="OB long, HTF trend uyumu..."
-                />
-              </div>
-
-              <button
-                onClick={openTrade}
-                disabled={!newTrade.entryPrice || !newTrade.size}
-                className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg font-bold mt-2"
-              >
-                İşlem Aç
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div >
-  );
-};
+    </div>
+  ); // return parantezi
+}; // PriceActionEngine fonksiyonu kapanışı
 
 export default PriceActionEngine;

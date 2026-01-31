@@ -5,7 +5,22 @@
  * Supports: ZONE, LINE, ARROW, MARKER, TEXT with PULSING, GLOW effects
  */
 
-// Import element types from conditionTracker if available
+const ELEMENT_STYLE = {
+    PULSING: 'PULSING',
+    GLOW: 'GLOW',
+    DASHED: 'DASHED',
+    SOLID: 'SOLID'
+};
+
+const NEON_COLORS = {
+    CYAN: '#00ffff',
+    GREEN: '#22c55e',
+    RED: '#ef4444',
+    PURPLE: '#a855f7',
+    YELLOW: '#eab308'
+};
+
+// Animation timing for pulsing effects
 
 // Animation timing for pulsing effects
 let animationFrame = 0;
@@ -110,7 +125,7 @@ class UniversalPaneView {
                     meta.elements.forEach(element => {
                         switch (element.type) {
                             case 'ZONE':
-                                this.drawZone(ctx, element, candles, timeScale, series, hpr, vpr, animPhase);
+                                this.drawZone(ctx, element, candles, timeScale, series, hpr, vpr, animPhase, scope);
                                 break;
                             case 'LINE':
                                 this.drawLine(ctx, element, candles, timeScale, series, hpr, vpr, animPhase);
@@ -138,7 +153,7 @@ class UniversalPaneView {
         };
     }
 
-    drawZone(ctx, element, candles, timeScale, series, hpr, vpr, animPhase) {
+    drawZone(ctx, element, candles, timeScale, series, hpr, vpr, animPhase, scope) {
         const y1 = series.priceToCoordinate(element.y1);
         const y2 = series.priceToCoordinate(element.y2);
 

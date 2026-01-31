@@ -1,62 +1,77 @@
-# Price Action Engine - Project Map
+# Project Roadmap
 
-## File Architecture
+## Development Phases
 
-```
-price-action-engine/
-├── App.jsx                  ← Main React component (MODIFIED for V3)
-├── signalEngineV3.js        ← [NEW] Institutional-grade PA logic
-├── conditionTracker.js      ← [NEW] Real-time condition status
-├── visualAnnotations.js     ← [NEW] Enhanced zone labels & highlights
-├── main.jsx                 ← React entry point (unchanged)
-├── index.css                ← Styles (unchanged)
-└── package.json             ← Dependencies (unchanged)
-```
+### 1. [DONE] Phase 4: Backtest Engine ✅
+**Completed: 20 January 2025**
+- ✅ BacktestEngine class with time-sliced simulation
+- ✅ Trade entry/exit with TP/SL logic
+- ✅ Performance metrics (win rate, profit factor, drawdown)
+- ✅ UI integration (🧪 Test button)
+- ✅ Visual Debug Mode (🐞 checkbox)
 
-## V3 Module Reference
+---
 
-### signalEngineV3.js
-| Export | Description |
-|--------|-------------|
-| `analyzeV3(candles)` | Main analysis function |
-| `SignalMemory` | Persistent memory class |
-| `findSwingPoints` | 5-candle fractal detection |
-| `findAllBOS` | Body-close based BOS |
-| `findBreakerBlocks` | OB → Breaker conversion |
-| `findMitigationBlocks` | HL/LH zone detection |
-| `generateSwingDebugMarkers` | Chart debug markers |
+### 2. [DONE] Phase 5: Multi-Pair Scanner ✅
+**Completed: 20 January 2026**
+- ✅ Scan multiple pairs sequentially (150ms delay)
+- ✅ User-controlled watchlist (add/remove symbols)
+- ✅ Power toggle (on/off) for scanner
+- ✅ Real-time signal badges (Long/Short/None)
+- ✅ Scanner sidebar panel ("Market Sentinel")
+- ✅ LocalStorage persistence for watchlist
 
-### conditionTracker.js
-| Export | Description |
-|--------|-------------|
-| `ConditionTracker` | Class for tracking conditions |
-| `CONDITION_STATUS` | Enum: met, pending, failed |
-| `getStatusIcon` | Returns ✅/⏳/❌ |
-| `getStatusColor` | Returns status color |
+---
 
-### visualAnnotations.js
-| Export | Description |
-|--------|-------------|
-| `ZoneAnnotationPrimitive` | Enhanced zone with labels |
-| `NeonHighlightPrimitive` | Click highlight effect |
-| `generateZoneLabel` | Creates label with prices |
-| `autoZoomToEvent` | Zooms chart to time |
+### 3. [DONE] Phase 6: Hybrid Educational AI Agent ✅
+**Completed: 20 January 2026**
+- ✅ **Hybrid Engine**: Dual-verification (V3 Algo + Gemini 2.5 Analysis)
+- ✅ **Mentor Mode**: Turkish educational insights ("Concept", "Why", "Guidance")
+- ✅ **Advanced**: Resilient Retry Logic & Header Auth (Anti-429/404)
+- ✅ **UI Integration**: "Explain & Verify" button on watchlist
+- ✅ **Persistence**: AI Master Toggle & API Key security
+- ✅ **Safety**: Strict JSON Schema enforcement
 
-## Revert Instructions
+---
 
-To revert to pre-V3 state:
+### 4. Phase 7: Hybrid Visual Bridge (Current)
+- [x] **Visual Analyst**: AI draws markers on chart.
+- [x] **Dual Buttons**: Verify + Explain.
+- [x] **Knowledge Base**: Product Expert integration.
 
-```bash
-# 1. Remove V3 imports from App.jsx (lines 5-8)
-# 2. Remove V3 state variables (lines ~356-361)
-# 3. Remove V3 useEffect (lines ~2024-2085)
-# 4. Restore original confirmations display
+### 5. Phase 8: Localization (Next)
+- [ ] **Turkish/English Support**.
+- [ ] **Multi-Currency**.
 
-# Or simply:
-git checkout HEAD~1 -- App.jsx
-```
+---
 
-## Safety Notes
-- All V3 modules are in separate files
-- Existing features (Calculator, Trendlines, Trades) preserved
-- V3 integration is surgical - minimal App.jsx changes
+### 5. [PENDING] Phase 8: UI Polish
+**Animations & Mobile**
+- PULSING/GLOW effects
+- Smooth transitions
+- Mobile responsive design
+- Touch-friendly interactions
+
+---
+
+### 6. [PENDING] Phase 9: Notification System
+**Telegram/Alerts**
+- Telegram bot integration
+- Push notifications
+- Email alerts
+- Custom alert conditions
+
+---
+
+## Priority Order
+1. ~~Backtest Engine~~ ✅ DONE
+2. ~~Multi-Pair Scanner~~ ✅ DONE
+3. ~~AI Agent~~ ✅ DONE
+4. ~~Visual Annotation~~ ✅ DONE
+5. **Localization** ← CURRENT
+6. UI Polish
+7. Notifications
+
+---
+
+Last Updated: 20 January 2026 08:20
